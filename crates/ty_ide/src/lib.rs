@@ -552,6 +552,14 @@ mod tests {
                 site_packages_sources: Vec::new(),
             }
         }
+
+        pub(super) fn extra_search_path(
+            &mut self,
+            path: impl Into<SystemPathBuf>,
+        ) -> &mut CursorTestBuilder {
+            self.extra_search_paths.push(path.into());
+            self
+        }
     }
 
     /// A cursor test builder that supports site-packages (third-party
@@ -722,25 +730,15 @@ mod tests {
             );
         }
 
-            let mut without_cursor_marker = contents[..cursor_offset].to_string();
-            without_cursor_marker.push_str(&contents[cursor_offset + MARKER.len()..]);
-            let cursor_offset =
-                TextSize::try_from(cursor_offset).expect("source to be smaller than 4GB");
-            self.sources.push(Source {
-                path,
-                contents: without_cursor_marker,
-                cursor_offset: Some(cursor_offset),
-            });
-            self
-        }
-
-        pub(super) fn extra_search_path(
-            &mut self,
-            path: impl Into<SystemPathBuf>,
-        ) -> &mut CursorTestBuilder {
-            self.extra_search_paths.push(path.into());
-            self
-        }
+        let mut without_cursor_marker = contents[..cursor_offset].to_string();
+        without_cursor_marker.push_str(&contents[cursor_offset + MARKER.len()..]);
+        let cursor_offset =
+            TextSize::try_from(cursor_offset).expect("source to be smaller than 4GB");
+        sources.push(Source {
+            path,
+            contents: without_cursor_marker,
+            cursor_offset: Some(cursor_offset),
+        });
     }
 
     struct Source {
