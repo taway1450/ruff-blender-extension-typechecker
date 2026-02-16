@@ -102,10 +102,12 @@ pub(crate) fn register_lints(registry: &mut LintRegistryBuilder) {
     registry.register_lint(&INVALID_TYPE_ARGUMENTS);
     registry.register_lint(&INVALID_TYPE_CHECKING_CONSTANT);
     registry.register_lint(&INVALID_TYPE_FORM);
+    registry.register_lint(&INVALID_MATCH_PATTERN);
     registry.register_lint(&INVALID_TYPE_GUARD_DEFINITION);
     registry.register_lint(&INVALID_TYPE_GUARD_CALL);
     registry.register_lint(&INVALID_TYPE_VARIABLE_CONSTRAINTS);
     registry.register_lint(&INVALID_TYPE_VARIABLE_BOUND);
+    registry.register_lint(&INVALID_TYPE_VARIABLE_DEFAULT);
     registry.register_lint(&MISSING_ARGUMENT);
     registry.register_lint(&NO_MATCHING_OVERLOAD);
     registry.register_lint(&NOT_SUBSCRIPTABLE);
@@ -117,9 +119,11 @@ pub(crate) fn register_lints(registry: &mut LintRegistryBuilder) {
     registry.register_lint(&POSSIBLY_UNRESOLVED_REFERENCE);
     registry.register_lint(&SUBCLASS_OF_FINAL_CLASS);
     registry.register_lint(&OVERRIDE_OF_FINAL_METHOD);
+    registry.register_lint(&OVERRIDE_OF_FINAL_VARIABLE);
     registry.register_lint(&INEFFECTIVE_FINAL);
     registry.register_lint(&FINAL_WITHOUT_VALUE);
     registry.register_lint(&ABSTRACT_METHOD_IN_FINAL_CLASS);
+    registry.register_lint(&CALL_ABSTRACT_METHOD);
     registry.register_lint(&TYPE_ASSERTION_FAILURE);
     registry.register_lint(&ASSERT_TYPE_UNSPELLABLE_SUBTYPE);
     registry.register_lint(&TOO_MANY_POSITIONAL_ARGUMENTS);
@@ -1638,6 +1642,28 @@ declare_lint! {
 
 declare_lint! {
     /// ## What it does
+    /// Checks for invalid match patterns.
+    ///
+    /// ## Why is this bad?
+    /// Matching on invalid patterns will lead to a runtime error.
+    ///
+    /// ## Examples
+    /// ```python
+    /// NotAClass = 42
+    ///
+    /// match x:
+    ///     case NotAClass():    # TypeError at runtime: must be a class
+    ///         ...
+    /// ```
+    pub(crate) static INVALID_MATCH_PATTERN = {
+        summary: "detect invalid match patterns",
+        status: LintStatus::stable("0.0.18"),
+        default_level: Level::Error,
+    }
+}
+
+declare_lint! {
+    /// ## What it does
     /// Checks for type guard functions without
     /// a first non-self-like non-keyword-only non-variadic parameter.
     ///
@@ -1754,6 +1780,32 @@ declare_lint! {
     pub(crate) static INVALID_TYPE_VARIABLE_BOUND = {
         summary: "detects invalid type variable bounds",
         status: LintStatus::stable("0.0.15"),
+        default_level: Level::Error,
+    }
+}
+
+declare_lint! {
+    /// ## What it does
+    /// Checks for [type variables] whose default type is not compatible with
+    /// the type variable's bound or constraints.
+    ///
+    /// ## Why is this bad?
+    /// If a type variable has a bound, the default must be assignable to that
+    /// bound (see: [bound rules]). If a type variable has constraints, the default
+    /// must be one of the constraints (see: [constraint rules]).
+    ///
+    /// ## Examples
+    /// ```python
+    /// T = TypeVar("T", bound=str, default=int)  # error: [invalid-type-variable-default]
+    /// U = TypeVar("U", int, str, default=bytes)  # error: [invalid-type-variable-default]
+    /// ```
+    ///
+    /// [type variables]: https://docs.python.org/3/library/typing.html#typing.TypeVar
+    /// [bound rules]: https://typing.python.org/en/latest/spec/generics.html#bound-rules
+    /// [constraint rules]: https://typing.python.org/en/latest/spec/generics.html#constraint-rules
+    pub(crate) static INVALID_TYPE_VARIABLE_DEFAULT = {
+        summary: "detects invalid type variable defaults",
+        status: LintStatus::stable("0.0.16"),
         default_level: Level::Error,
     }
 }
@@ -2061,6 +2113,33 @@ declare_lint! {
 
 declare_lint! {
     /// ## What it does
+    /// Checks for class variables on subclasses that override a superclass variable
+    /// that has been declared as `Final`.
+    ///
+    /// ## Why is this bad?
+    /// Declaring a variable as `Final` indicates to the type checker that it should not be
+    /// overridden on any subclass.
+    ///
+    /// ## Example
+    ///
+    /// ```python
+    /// from typing import Final
+    ///
+    /// class A:
+    ///     X: Final[int] = 1
+    ///
+    /// class B(A):
+    ///     X = 2  # Error raised here
+    /// ```
+    pub(crate) static OVERRIDE_OF_FINAL_VARIABLE = {
+        summary: "detects overrides of Final class variables",
+        status: LintStatus::stable("0.0.16"),
+        default_level: Level::Error,
+    }
+}
+
+declare_lint! {
+    /// ## What it does
     /// Checks for calls to `final()` that type checkers cannot interpret.
     ///
     /// ## Why is this bad?
@@ -2145,6 +2224,49 @@ declare_lint! {
     pub(crate) static ABSTRACT_METHOD_IN_FINAL_CLASS = {
         summary: "detects `@final` classes with unimplemented abstract methods",
         status: LintStatus::stable("0.0.13"),
+        default_level: Level::Error,
+    }
+}
+
+declare_lint! {
+    /// ## What it does
+    /// Checks for calls to abstract `@classmethod`s or `@staticmethod`s
+    /// with "trivial bodies" when accessed on the class object itself.
+    ///
+    /// "Trivial bodies" are bodies that solely consist of `...`, `pass`,
+    /// a docstring, and/or `raise NotImplementedError`.
+    ///
+    /// ## Why is this bad?
+    /// An abstract method with a trivial body has no concrete implementation
+    /// to execute, so calling such a method directly on the class will probably
+    /// not have the desired effect.
+    ///
+    /// It is also unsound to call these methods directly on the class. Unlike
+    /// other methods, ty permits abstract methods with trivial bodies to have
+    /// non-`None` return types even though they always return `None` at runtime.
+    /// This is because it is expected that these methods will always be
+    /// overridden rather than being called directly. As a result of this
+    /// exception to the normal rule, ty may infer an incorrect type if one of
+    /// these methods is called directly, which may then mean that type errors
+    /// elsewhere in your code go undetected by ty.
+    ///
+    /// Calling abstract classmethods or staticmethods via `type[X]` is allowed,
+    /// since the actual runtime type could be a concrete subclass with an implementation.
+    ///
+    /// ## Example
+    /// ```python
+    /// from abc import ABC, abstractmethod
+    ///
+    /// class Foo(ABC):
+    ///     @classmethod
+    ///     @abstractmethod
+    ///     def method(cls) -> int: ...
+    ///
+    /// Foo.method()  # Error: cannot call abstract classmethod
+    /// ```
+    pub(crate) static CALL_ABSTRACT_METHOD = {
+        summary: "detects calls to abstract methods with trivial bodies on class objects",
+        status: LintStatus::preview("0.0.16"),
         default_level: Level::Error,
     }
 }
@@ -3879,6 +4001,22 @@ pub(crate) fn report_invalid_arguments_to_callable(
     ));
 }
 
+pub(crate) fn report_invalid_class_match_pattern<T: Ranged>(
+    context: &InferContext,
+    pattern_cls: T,
+    cls_ty: Type,
+) {
+    let Some(builder) = context.report_lint(&INVALID_MATCH_PATTERN, pattern_cls) else {
+        return;
+    };
+    let db = context.db();
+    let class_display = cls_ty.display(db);
+    let mut diagnostic = builder.into_diagnostic(format_args!(
+        "`{class_display}` cannot be used in a class pattern because it is not a type"
+    ));
+    diagnostic.set_primary_message("This will raise `TypeError` at runtime");
+}
+
 pub(crate) fn add_type_expression_reference_link<'db, 'ctx>(
     mut diag: LintDiagnosticGuard<'db, 'ctx>,
 ) -> LintDiagnosticGuard<'db, 'ctx> {
@@ -4074,6 +4212,30 @@ pub(crate) fn report_attempted_protocol_instantiation(
             .message(format_args!("`{class_name}` declared as a protocol here")),
     );
     diagnostic.sub(class_def_diagnostic);
+}
+
+pub(crate) fn report_call_to_abstract_method(
+    context: &InferContext,
+    call: &ast::ExprCall,
+    function: FunctionType,
+    method_kind: &str,
+) {
+    let Some(builder) = context.report_lint(&CALL_ABSTRACT_METHOD, call) else {
+        return;
+    };
+    let db = context.db();
+    let name = function.name(db);
+    let mut diag = builder.into_diagnostic(format_args!("Cannot call `{name}` on class object"));
+    diag.set_primary_message(format_args!(
+        "`{name}` is an abstract {method_kind} with a trivial body"
+    ));
+    let spans = function.spans(db);
+    let mut sub = SubDiagnostic::new(
+        SubDiagnosticSeverity::Info,
+        format_args!("Method `{name}` defined here"),
+    );
+    sub.annotate(Annotation::primary(spans.name));
+    diag.sub(sub);
 }
 
 pub(crate) fn report_undeclared_protocol_member(
@@ -4401,7 +4563,7 @@ pub(crate) fn report_invalid_key_on_typed_dict<'db>(
                         .message(format_args!("TypedDict `{typed_dict_name}`"))
                 });
 
-                let existing_keys = items.keys();
+                let existing_keys = items.keys().map(Name::as_str);
                 if let Some(suggestion) = did_you_mean(existing_keys, key) {
                     if let AnyNodeRef::ExprStringLiteral(literal) = key_node {
                         let quoted_suggestion = format!(
@@ -5095,6 +5257,60 @@ pub(super) fn report_overridden_final_method<'db>(
         diagnostic.help(format_args!("Remove the getter and setter for `{member}`"));
     } else {
         diagnostic.help(format_args!("Remove the override of `{member}`"));
+    }
+}
+
+pub(super) fn report_overridden_final_variable<'db>(
+    context: &InferContext<'db, '_>,
+    member: &str,
+    subclass_definition: Definition<'db>,
+    superclass: ClassType<'db>,
+    subclass: ClassType<'db>,
+    superclass_definition: Option<Definition<'db>>,
+) {
+    let db = context.db();
+
+    let Some(builder) = context.report_lint(
+        &OVERRIDE_OF_FINAL_VARIABLE,
+        subclass_definition.focus_range(db, context.module()),
+    ) else {
+        return;
+    };
+
+    let superclass_name = if superclass.name(db) == subclass.name(db) {
+        superclass.qualified_name(db).to_string()
+    } else {
+        superclass.name(db).to_string()
+    };
+
+    let mut diagnostic =
+        builder.into_diagnostic(format_args!("Cannot override `{superclass_name}.{member}`"));
+    diagnostic.set_primary_message(format_args!(
+        "Overrides a final variable from superclass `{superclass_name}`"
+    ));
+    diagnostic.set_concise_message(format_args!(
+        "Cannot override final variable `{member}` from superclass `{superclass_name}`"
+    ));
+
+    if let Some(superclass_def) = superclass_definition {
+        let mut sub = SubDiagnostic::new(
+            SubDiagnosticSeverity::Info,
+            format_args!(
+                "`{superclass_name}.{member}` is declared as `Final`, forbidding overrides"
+            ),
+        );
+        sub.annotate(
+            Annotation::secondary(Span::from(
+                superclass_def
+                    .focus_range(db, &parsed_module(db, superclass_def.file(db)).load(db)),
+            ))
+            .message(format_args!("`{superclass_name}.{member}` defined here")),
+        );
+        diagnostic.sub(sub);
+    } else {
+        diagnostic.info(format_args!(
+            "`{superclass_name}.{member}` is declared as `Final`, forbidding overrides"
+        ));
     }
 }
 
