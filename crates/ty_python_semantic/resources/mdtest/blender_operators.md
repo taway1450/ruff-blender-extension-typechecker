@@ -191,7 +191,7 @@ def unregister():
 import bpy
 
 def test():
-    reveal_type(bpy.ops.mesh.custom_move)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, distance: float | None = None) -> set[str]
+    reveal_type(bpy.ops.mesh.custom_move)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, distance: int | float | None = None) -> set[str]
     reveal_type(bpy.ops.wm.show_info)      # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, message: str | None = None) -> set[str]
     reveal_type(bpy.ops.object.transform_custom)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, scale: int | float | None = None, apply: bool | None = None) -> set[str]
 ```

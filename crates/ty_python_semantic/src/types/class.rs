@@ -1635,8 +1635,10 @@ impl<'db> ClassType<'db> {
 
         // Fallback: check for dynamic Blender properties registered in project files
         if result.is_undefined() {
-            if let Some(dynamic_ty) = lookup_blender_dynamic_property(db, self, name) {
-                return Member::definitely_declared(dynamic_ty);
+            if let Some(static_class) = self.class_literal(db).as_static() {
+                if let Some(dynamic_ty) = lookup_blender_dynamic_property(db, static_class, name) {
+                    return Member::definitely_declared(dynamic_ty);
+                }
             }
         }
         result
