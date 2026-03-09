@@ -3,15 +3,16 @@ use ruff_python_ast::name::Name;
 use rustc_hash::FxHashSet;
 
 use crate::place::{DefinedPlace, Place};
-use crate::types::builder::RecursivelyDefined;
 use crate::types::constraints::{
     ConstraintSetBuilder, IteratorConstraintsExtension, OptionConstraintsExtension,
 };
+use crate::types::cyclic::PairVisitor;
 use crate::types::enums::is_single_member_enum;
+use crate::types::set_theoretic::RecursivelyDefined;
 use crate::types::{
-    CallableType, ClassBase, ClassType, CycleDetector, DynamicType, KnownClass, KnownInstanceType,
-    LiteralValueTypeKind, MemberLookupPolicy, PairVisitor, ProtocolInstanceType, SubclassOfInner,
-    TypeVarBoundOrConstraints, UnionType,
+    CallableType, CallableTypes, ClassBase, ClassType, CycleDetector, DynamicType, KnownClass,
+    KnownInstanceType, LiteralValueTypeKind, MemberLookupPolicy, Parameters, ProtocolInstanceType,
+    Signature, SubclassOfInner, TypeVarBoundOrConstraints, UnionType,
 };
 use crate::{
     Db,
@@ -226,6 +227,53 @@ impl TypeRelation {
 
 #[salsa::tracked]
 impl<'db> Type<'db> {
+    /// Return `true` if subtyping is always reflexive for this type; `T <: T` is always true for
+    /// any `T` of this type.
+    ///
+    /// This is true for fully static types, but also for some types that may not be fully static.
+    /// For example, a `ClassLiteral` may inherit `Any`, but its subtyping is still reflexive.
+    ///
+    /// This method may have false negatives, but it should not have false positives. It should be
+    /// a cheap shallow check, not an exhaustive recursive check.
+    const fn subtyping_is_always_reflexive(self) -> bool {
+        match self {
+            Type::Never
+            | Type::FunctionLiteral(..)
+            | Type::BoundMethod(_)
+            | Type::WrapperDescriptor(_)
+            | Type::KnownBoundMethod(_)
+            | Type::DataclassDecorator(_)
+            | Type::DataclassTransformer(_)
+            | Type::ModuleLiteral(..)
+            | Type::LiteralValue(_)
+            | Type::SpecialForm(_)
+            | Type::KnownInstance(_)
+            | Type::AlwaysFalsy
+            | Type::AlwaysTruthy
+            | Type::PropertyInstance(_)
+            // `T` is always a subtype of itself,
+            // and `T` is always a subtype of `T | None`
+            | Type::TypeVar(_)
+            // might inherit `Any`, but subtyping is still reflexive
+            | Type::ClassLiteral(_)
+             => true,
+            Type::Dynamic(_)
+            | Type::NominalInstance(_)
+            | Type::ProtocolInstance(_)
+            | Type::GenericAlias(_)
+            | Type::SubclassOf(_)
+            | Type::Union(_)
+            | Type::Intersection(_)
+            | Type::Callable(_)
+            | Type::BoundSuper(_)
+            | Type::TypeIs(_)
+            | Type::TypeGuard(_)
+            | Type::TypedDict(_)
+            | Type::TypeAlias(_)
+            | Type::NewTypeInstance(_) => false,
+        }
+    }
+
     /// Return true if this type is a subtype of type `target`.
     ///
     /// See [`TypeRelation::Subtyping`] for more details.
@@ -1137,19 +1185,37 @@ impl<'db> Type<'db> {
                 }),
 
             (_, Type::Callable(other_callable)) => {
-                relation_visitor.visit((self, target, relation), || {
-                    self.try_upcast_to_callable(db)
-                        .when_some_and(db, constraints, |callables| {
-                            callables.has_relation_to_impl(
+                // Special-case: upcasting a subclass-of to its `Callable` "supertype" is unsound,
+                // because we don't do Liskov checks for constructor signatures.
+                let upcasted = if let Type::SubclassOf(inner) = self {
+                    match relation {
+                        TypeRelation::Subtyping
+                        | TypeRelation::SubtypingAssuming
+                        | TypeRelation::Redundancy { .. } => {
+                            Some(CallableTypes::one(CallableType::function_like(
                                 db,
-                                other_callable,
-                                constraints,
-                                inferable,
-                                relation,
-                                relation_visitor,
-                                disjointness_visitor,
-                            )
-                        })
+                                Signature::new(Parameters::top(), inner.to_instance(db)),
+                            )))
+                        }
+                        TypeRelation::Assignability | TypeRelation::ConstraintSetAssignability => {
+                            self.try_upcast_to_callable(db)
+                        }
+                    }
+                } else {
+                    self.try_upcast_to_callable(db)
+                };
+                relation_visitor.visit((self, target, relation), || {
+                    upcasted.when_some_and(db, constraints, |callables| {
+                        callables.has_relation_to_impl(
+                            db,
+                            other_callable,
+                            constraints,
+                            inferable,
+                            relation,
+                            relation_visitor,
+                            disjointness_visitor,
+                        )
+                    })
                 })
             }
 
