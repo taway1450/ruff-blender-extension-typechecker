@@ -84,7 +84,7 @@ def test():
 
 ## Multiple operators in different modules
 
-Multiple operators registered in the same `register()` function should all be resolvable.
+Multiple operators registered in the same `register()` function should all be resolvable. One operator has been moved to its own module, another operator has been moved to a separate module, and a new operator has been added in a third module. `__init__.py` imports one module and uses `from ... import` to import the class from the other.
 
 ```toml
 [environment]
@@ -128,7 +128,7 @@ def register_class(cls: type) -> None: ...
 ```pyi
 ```
 
-`my_addon/__init__.py`:
+`my_addon/move_ops.py`:
 
 ```py
 import bpy
@@ -141,6 +141,12 @@ class MoveOperator(bpy.types.Operator):
 
     def execute(self, context):
         return {"FINISHED"}
+```
+
+`my_addon/info_ops.py`:
+
+```py
+import bpy
 
 class InfoOperator(bpy.types.Operator):
     bl_idname = "wm.show_info"
@@ -150,10 +156,30 @@ class InfoOperator(bpy.types.Operator):
 
     def execute(self, context):
         return {"FINISHED"}
+```
+
+`my_addon/__init__.py`:
+
+```py
+import bpy
+
+from . import move_ops  # import the module
+from .info_ops import InfoOperator  # import only the class
+
+class TransformOperator(bpy.types.Operator):
+    bl_idname = "object.transform_custom"
+    bl_label = "Transform Custom"
+
+    scale: bpy.props.FloatProperty()
+    apply: bpy.props.BoolProperty()
+
+    def execute(self, context):
+        return {"FINISHED"}
 
 def register():
-    bpy.utils.register_class(MoveOperator)
+    bpy.utils.register_class(move_ops.MoveOperator)
     bpy.utils.register_class(InfoOperator)
+    bpy.utils.register_class(TransformOperator)
 
 def unregister():
     pass
@@ -165,8 +191,9 @@ def unregister():
 import bpy
 
 def test():
-    reveal_type(bpy.ops.mesh.custom_move)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, distance: int | float | None = None) -> set[str]
-    reveal_type(bpy.ops.wm.show_info)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, message: str | None = None) -> set[str]
+    reveal_type(bpy.ops.mesh.custom_move)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, distance: float | None = None) -> set[str]
+    reveal_type(bpy.ops.wm.show_info)      # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, message: str | None = None) -> set[str]
+    reveal_type(bpy.ops.object.transform_custom)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, scale: int | float | None = None, apply: bool | None = None) -> set[str]
 ```
 
 ## Operator registered via helper function
@@ -326,4 +353,81 @@ import bpy
 
 def test():
     reveal_type(bpy.ops.wm.simple)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, /) -> set[str]
+```
+
+## Operator with custom addon module name in bl_idname
+
+Operators can use a custom addon module name in their `bl_idname` (e.g. `"my_addon.my_operator"`),
+not just the built-in Blender modules like `"wm"` or `"mesh"`.
+
+```toml
+[environment]
+extra-paths = ["/stubs"]
+```
+
+`/stubs/bpy/__init__.pyi`:
+
+```pyi
+from bpy import ops as ops
+from bpy import props as props
+from bpy import types as types
+from bpy import utils as utils
+```
+
+`/stubs/bpy/types.pyi`:
+
+```pyi
+class Operator:
+    bl_idname: str
+    bl_label: str
+```
+
+`/stubs/bpy/props.pyi`:
+
+```pyi
+def IntProperty() -> int: ...
+def StringProperty() -> str: ...
+```
+
+`/stubs/bpy/utils.pyi`:
+
+```pyi
+def register_class(cls: type) -> None: ...
+```
+
+`/stubs/bpy/ops/__init__.pyi`:
+
+```pyi
+```
+
+`my_addon/__init__.py`:
+
+```py
+import bpy
+
+class MyAddonOperator(bpy.types.Operator):
+    bl_idname = "my_addon.my_operator"
+    bl_label = "My Addon Operator"
+
+    value: bpy.props.IntProperty()
+    label: bpy.props.StringProperty()
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+def register():
+    bpy.utils.register_class(MyAddonOperator)
+
+def unregister():
+    pass
+```
+
+`use_addon_op.py`:
+
+```py
+import bpy
+
+def test():
+    reveal_type(bpy.ops.my_addon.my_operator)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, value: int | None = None, label: str | None = None) -> set[str]
+    bpy.ops.my_addon.my_operator(value=42, label="hello")
 ```

@@ -548,10 +548,19 @@ fn find_class_def<'a>(stmts: &'a [ast::Stmt], name: &str) -> Option<&'a ast::Stm
     None
 }
 
-/// Collects class names passed to `bpy.utils.register_class(ClassName)` calls
+/// The argument passed to `bpy.utils.register_class(...)`, captured from the AST.
+enum RegisterClassArg<'a> {
+    /// Simple name: `register_class(MyOperator)`
+    Name(&'a str),
+    /// Qualified name: `register_class(module.MyOperator)`
+    Qualified { qualifier: &'a str, name: &'a str },
+}
+
+/// Collects class arguments passed to `bpy.utils.register_class(...)` calls
 /// within a statement body, handling nested control flow.
-fn collect_register_class_calls_in_body<'a>(stmts: &'a [ast::Stmt]) -> Vec<&'a str> {
-    let mut class_names = Vec::new();
+/// Recognises both plain names (`MyOp`) and attribute access (`module.MyOp`).
+fn collect_register_class_calls_in_body<'a>(stmts: &'a [ast::Stmt]) -> Vec<RegisterClassArg<'a>> {
+    let mut class_args = Vec::new();
 
     for stmt in stmts {
         match stmt {
@@ -560,48 +569,55 @@ fn collect_register_class_calls_in_body<'a>(stmts: &'a [ast::Stmt]) -> Vec<&'a s
                     if is_register_class_call(&call.func) {
                         if let Some(first_arg) = call.arguments.args.first() {
                             if let Some(name) = first_arg.as_name_expr() {
-                                class_names.push(name.id.as_str());
+                                class_args.push(RegisterClassArg::Name(name.id.as_str()));
+                            } else if let Some(attr) = first_arg.as_attribute_expr() {
+                                if let Some(qualifier) = attr.value.as_name_expr() {
+                                    class_args.push(RegisterClassArg::Qualified {
+                                        qualifier: qualifier.id.as_str(),
+                                        name: attr.attr.as_str(),
+                                    });
+                                }
                             }
                         }
                     }
                 }
             }
             ast::Stmt::If(if_stmt) => {
-                class_names.extend(collect_register_class_calls_in_body(&if_stmt.body));
+                class_args.extend(collect_register_class_calls_in_body(&if_stmt.body));
                 for elif in &if_stmt.elif_else_clauses {
-                    class_names.extend(collect_register_class_calls_in_body(&elif.body));
+                    class_args.extend(collect_register_class_calls_in_body(&elif.body));
                 }
             }
             ast::Stmt::With(with_stmt) => {
-                class_names.extend(collect_register_class_calls_in_body(&with_stmt.body));
+                class_args.extend(collect_register_class_calls_in_body(&with_stmt.body));
             }
             ast::Stmt::Match(match_stmt) => {
                 for case in &match_stmt.cases {
-                    class_names.extend(collect_register_class_calls_in_body(&case.body));
+                    class_args.extend(collect_register_class_calls_in_body(&case.body));
                 }
             }
             ast::Stmt::For(for_stmt) => {
-                class_names.extend(collect_register_class_calls_in_body(&for_stmt.body));
-                class_names.extend(collect_register_class_calls_in_body(&for_stmt.orelse));
+                class_args.extend(collect_register_class_calls_in_body(&for_stmt.body));
+                class_args.extend(collect_register_class_calls_in_body(&for_stmt.orelse));
             }
             ast::Stmt::While(while_stmt) => {
-                class_names.extend(collect_register_class_calls_in_body(&while_stmt.body));
-                class_names.extend(collect_register_class_calls_in_body(&while_stmt.orelse));
+                class_args.extend(collect_register_class_calls_in_body(&while_stmt.body));
+                class_args.extend(collect_register_class_calls_in_body(&while_stmt.orelse));
             }
             ast::Stmt::Try(try_stmt) => {
-                class_names.extend(collect_register_class_calls_in_body(&try_stmt.body));
+                class_args.extend(collect_register_class_calls_in_body(&try_stmt.body));
                 for handler in &try_stmt.handlers {
                     let ast::ExceptHandler::ExceptHandler(handler_inner) = handler;
-                    class_names.extend(collect_register_class_calls_in_body(&handler_inner.body));
+                    class_args.extend(collect_register_class_calls_in_body(&handler_inner.body));
                 }
-                class_names.extend(collect_register_class_calls_in_body(&try_stmt.orelse));
-                class_names.extend(collect_register_class_calls_in_body(&try_stmt.finalbody));
+                class_args.extend(collect_register_class_calls_in_body(&try_stmt.orelse));
+                class_args.extend(collect_register_class_calls_in_body(&try_stmt.finalbody));
             }
             _ => {}
         }
     }
 
-    class_names
+    class_args
 }
 
 /// Checks if a call expression matches the `bpy.utils.register_class` or
@@ -795,20 +811,74 @@ fn walk_function_for_properties(
         }
     }
 
-    // Collect register_class calls and extract operator info
+    // Build import maps early — needed for both operator lookup and function call following.
+    let import_map = build_import_map(db, file, file_stmts);
+    let module_import_map = build_module_import_map(db, file, file_stmts);
+
+    // Collect register_class calls and extract operator info.
+    // Handles three cases:
+    //   1. register_class(LocalClass)       — class defined in this file
+    //   2. register_class(ImportedClass)    — class imported via `from .mod import Cls`
+    //   3. register_class(module.Class)     — class accessed via imported module
     let register_calls = collect_register_class_calls_in_body(body);
-    for class_name in &register_calls {
-        // Look up the class definition in the current file
-        if let Some(class_def) = find_class_def(file_stmts, class_name) {
-            if let Some(op_info) = extract_operator_info(class_def, file) {
-                registries.operators.add(op_info);
+    for arg in &register_calls {
+        match arg {
+            RegisterClassArg::Name(class_name) => {
+                if let Some(class_def) = find_class_def(file_stmts, class_name) {
+                    // Case 1: defined locally in this file
+                    if let Some(op_info) = extract_operator_info(class_def, file) {
+                        registries.operators.add(op_info);
+                    }
+                } else if let Some((module_name_str, original_name)) =
+                    import_map.get(*class_name)
+                {
+                    // Case 2: imported from another module
+                    if let Some(module_name) = ModuleName::new(module_name_str) {
+                        if let Some(target_module) = resolve_module(db, file, &module_name) {
+                            if let Some(target_file) = target_module.file(db) {
+                                let target_parsed = parsed_module(db, target_file).load(db);
+                                let target_stmts = target_parsed.suite();
+                                if let Some(class_def) =
+                                    find_class_def(target_stmts, original_name)
+                                {
+                                    if let Some(op_info) =
+                                        extract_operator_info(class_def, target_file)
+                                    {
+                                        registries.operators.add(op_info);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            RegisterClassArg::Qualified { qualifier, name: class_name } => {
+                // Case 3: `register_class(module.MyOperator)` — resolve module alias
+                if let Some(module_name_str) = module_import_map.get(*qualifier) {
+                    if let Some(module_name) = ModuleName::new(module_name_str) {
+                        if let Some(target_module) = resolve_module(db, file, &module_name) {
+                            if let Some(target_file) = target_module.file(db) {
+                                let target_parsed = parsed_module(db, target_file).load(db);
+                                let target_stmts = target_parsed.suite();
+                                if let Some(class_def) =
+                                    find_class_def(target_stmts, class_name)
+                                {
+                                    if let Some(op_info) =
+                                        extract_operator_info(class_def, target_file)
+                                    {
+                                        registries.operators.add(op_info);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
     // Collect function calls and follow them
     let calls = collect_function_calls_in_body(body);
-    let import_map = build_import_map(db, file, file_stmts);
 
     for call_name in &calls {
         // Check if this is a local function in the same file
@@ -865,7 +935,6 @@ fn walk_function_for_properties(
 
     // Collect qualified calls like `module.func()` and follow them
     let qualified_calls = collect_qualified_calls_in_body(body);
-    let module_import_map = build_module_import_map(db, file, file_stmts);
 
     for (qualifier, func_name) in &qualified_calls {
         if let Some(module_name_str) = module_import_map.get(qualifier) {
