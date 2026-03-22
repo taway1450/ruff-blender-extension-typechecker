@@ -196,6 +196,251 @@ def test():
     reveal_type(bpy.ops.object.transform_custom)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, scale: int | float | None = None, apply: bool | None = None) -> set[str]
 ```
 
+## Multiple operators in different modules from class list
+
+Multiple operators registered in the same `register()` function should all be resolvable. One operator has been moved to its own module, another operator has been moved to a separate module, and a new operator has been added in a third module. `__init__.py` imports one module and uses `from ... import` to import the class from the other.
+
+```toml
+[environment]
+extra-paths = ["/stubs"]
+```
+
+`/stubs/bpy/__init__.pyi`:
+
+```pyi
+from bpy import ops as ops
+from bpy import props as props
+from bpy import types as types
+from bpy import utils as utils
+```
+
+`/stubs/bpy/types.pyi`:
+
+```pyi
+class Operator:
+    bl_idname: str
+    bl_label: str
+```
+
+`/stubs/bpy/props.pyi`:
+
+```pyi
+def IntProperty() -> int: ...
+def FloatProperty() -> float: ...
+def StringProperty() -> str: ...
+def BoolProperty() -> bool: ...
+```
+
+`/stubs/bpy/utils.pyi`:
+
+```pyi
+def register_class(cls: type) -> None: ...
+def unregister_class(cls: type) -> None: ...
+```
+
+`/stubs/bpy/ops/__init__.pyi`:
+
+```pyi
+```
+
+`my_addon/move_ops.py`:
+
+```py
+import bpy
+
+class MoveOperator(bpy.types.Operator):
+    bl_idname = "unique_module1.custom_move"
+    bl_label = "Custom Move"
+
+    distance: bpy.props.FloatProperty()
+
+    def execute(self, context):
+        return {"FINISHED"}
+```
+
+`my_addon/info_ops.py`:
+
+```py
+import bpy
+
+class InfoOperator(bpy.types.Operator):
+    bl_idname = "unique_module2.show_info"
+    bl_label = "Show Info"
+
+    message: bpy.props.StringProperty()
+
+    def execute(self, context):
+        return {"FINISHED"}
+```
+
+`my_addon/__init__.py`:
+
+```py
+import bpy
+
+from . import move_ops  # import the module
+from .info_ops import InfoOperator  # import only the class
+from bpy.utils import register_class, unregister_class
+
+class TransformOperator(bpy.types.Operator):
+    bl_idname = "unique_module3.transform_custom"
+    bl_label = "Transform Custom"
+
+    scale: bpy.props.FloatProperty()
+    apply: bpy.props.BoolProperty()
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+classes = [
+    TransformOperator,
+    InfoOperator,
+    move_ops.MoveOperator,
+]
+
+def register():
+    for cls in classes:
+        register_class(cls)
+
+def unregister():
+    for cls in reversed(classes):
+        unregister_class(cls)
+```
+
+`use_operators.py`:
+
+```py
+import bpy
+
+def test():
+    reveal_type(bpy.ops.unique_module1.custom_move)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, distance: int | float | None = None) -> set[str]
+    reveal_type(bpy.ops.unique_module2.show_info)      # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, message: str | None = None) -> set[str]
+    reveal_type(bpy.ops.unique_module3.transform_custom)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, scale: int | float | None = None, apply: bool | None = None) -> set[str]
+```
+
+## Multiple operators in different modules from class tuple
+
+Multiple operators registered in the same `register()` function should all be resolvable. One operator has been moved to its own module, another operator has been moved to a separate module, and a new operator has been added in a third module. `__init__.py` imports one module and uses `from ... import` to import the class from the other.
+
+```toml
+[environment]
+extra-paths = ["/stubs"]
+```
+
+`/stubs/bpy/__init__.pyi`:
+
+```pyi
+from bpy import ops as ops
+from bpy import props as props
+from bpy import types as types
+from bpy import utils as utils
+```
+
+`/stubs/bpy/types.pyi`:
+
+```pyi
+class Operator:
+    bl_idname: str
+    bl_label: str
+```
+
+`/stubs/bpy/props.pyi`:
+
+```pyi
+def IntProperty() -> int: ...
+def FloatProperty() -> float: ...
+def StringProperty() -> str: ...
+def BoolProperty() -> bool: ...
+```
+
+`/stubs/bpy/utils.pyi`:
+
+```pyi
+def register_class(cls: type) -> None: ...
+def unregister_class(cls: type) -> None: ...
+```
+
+`/stubs/bpy/ops/__init__.pyi`:
+
+```pyi
+```
+
+`my_addon/move_ops.py`:
+
+```py
+import bpy
+
+class MoveOperator(bpy.types.Operator):
+    bl_idname = "unique_module1.custom_move"
+    bl_label = "Custom Move"
+
+    distance: bpy.props.FloatProperty()
+
+    def execute(self, context):
+        return {"FINISHED"}
+```
+
+`my_addon/info_ops.py`:
+
+```py
+import bpy
+
+class InfoOperator(bpy.types.Operator):
+    bl_idname = "unique_module2.show_info"
+    bl_label = "Show Info"
+
+    message: bpy.props.StringProperty()
+
+    def execute(self, context):
+        return {"FINISHED"}
+```
+
+`my_addon/__init__.py`:
+
+```py
+import bpy
+
+from . import move_ops  # import the module
+from .info_ops import InfoOperator  # import only the class
+from bpy.utils import register_class, unregister_class
+
+class TransformOperator(bpy.types.Operator):
+    bl_idname = "unique_module3.transform_custom"
+    bl_label = "Transform Custom"
+
+    scale: bpy.props.FloatProperty()
+    apply: bpy.props.BoolProperty()
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+classes = (
+    TransformOperator,
+    InfoOperator,
+    move_ops.MoveOperator,
+)
+
+def register():
+    for cls in classes:
+        register_class(cls)
+
+def unregister():
+    for cls in reversed(classes):
+        unregister_class(cls)
+```
+
+`use_operators.py`:
+
+```py
+import bpy
+
+def test():
+    reveal_type(bpy.ops.unique_module1.custom_move)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, distance: int | float | None = None) -> set[str]
+    reveal_type(bpy.ops.unique_module2.show_info)      # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, message: str | None = None) -> set[str]
+    reveal_type(bpy.ops.unique_module3.transform_custom)  # revealed: (execution_context: int | str | None = None, undo: bool | None = None, *, /, scale: int | float | None = None, apply: bool | None = None) -> set[str]
+```
+
+
 ## Operator registered via helper function
 
 Operators can be registered from helper functions that `register()` calls, including

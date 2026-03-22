@@ -620,6 +620,197 @@ fn collect_register_class_calls_in_body<'a>(stmts: &'a [ast::Stmt]) -> Vec<Regis
     class_args
 }
 
+/// Detects `for <var> in <iterable>: ... register_class(<var>)` patterns in a
+/// statement body and expands the iterable (a module-level tuple/list) into
+/// individual `RegisterClassArg` entries.
+///
+/// Handles patterns like:
+/// ```python
+/// classes = (MyOp, module.OtherOp)
+/// def register():
+///     for cls in classes:
+///         register_class(cls)
+/// ```
+fn collect_for_loop_register_class_elements<'a>(
+    body: &[ast::Stmt],
+    file_stmts: &'a [ast::Stmt],
+) -> Vec<RegisterClassArg<'a>> {
+    let mut results = Vec::new();
+
+    for stmt in body {
+        match stmt {
+            ast::Stmt::For(for_stmt) => {
+                // Check if the loop variable is a simple name
+                let Some(loop_var) = for_stmt.target.as_name_expr() else {
+                    // Recurse into nested for-loops even if this one doesn't match
+                    results.extend(collect_for_loop_register_class_elements(
+                        &for_stmt.body,
+                        file_stmts,
+                    ));
+                    continue;
+                };
+                let loop_var_name = loop_var.id.as_str();
+
+                // Check if the for-loop body contains register_class(loop_var)
+                if !body_calls_register_class_with(
+                    &for_stmt.body,
+                    loop_var_name,
+                ) {
+                    // Recurse anyway for nested structures
+                    results.extend(collect_for_loop_register_class_elements(
+                        &for_stmt.body,
+                        file_stmts,
+                    ));
+                    continue;
+                }
+
+                // The iterable might be a simple name or `reversed(name)`
+                let iterable_name = if let Some(name) = for_stmt.iter.as_name_expr() {
+                    Some(name.id.as_str())
+                } else if let Some(call) = for_stmt.iter.as_call_expr() {
+                    // Handle `reversed(classes)` pattern
+                    if let Some(func_name) = call.func.as_name_expr() {
+                        if func_name.id.as_str() == "reversed" {
+                            call.arguments
+                                .args
+                                .first()
+                                .and_then(|a| a.as_name_expr())
+                                .map(|n| n.id.as_str())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let Some(iterable_name) = iterable_name else {
+                    continue;
+                };
+
+                // Find the tuple/list assignment at module level
+                if let Some(elements) =
+                    find_tuple_or_list_elements(file_stmts, iterable_name)
+                {
+                    for elem in elements {
+                        if let Some(name) = elem.as_name_expr() {
+                            results.push(RegisterClassArg::Name(name.id.as_str()));
+                        } else if let Some(attr) = elem.as_attribute_expr() {
+                            if let Some(qualifier) = attr.value.as_name_expr() {
+                                results.push(RegisterClassArg::Qualified {
+                                    qualifier: qualifier.id.as_str(),
+                                    name: attr.attr.as_str(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            ast::Stmt::If(if_stmt) => {
+                results.extend(collect_for_loop_register_class_elements(
+                    &if_stmt.body,
+                    file_stmts,
+                ));
+                for elif in &if_stmt.elif_else_clauses {
+                    results.extend(collect_for_loop_register_class_elements(
+                        &elif.body,
+                        file_stmts,
+                    ));
+                }
+            }
+            ast::Stmt::Try(try_stmt) => {
+                results.extend(collect_for_loop_register_class_elements(
+                    &try_stmt.body,
+                    file_stmts,
+                ));
+                for handler in &try_stmt.handlers {
+                    let ast::ExceptHandler::ExceptHandler(handler_inner) = handler;
+                    results.extend(collect_for_loop_register_class_elements(
+                        &handler_inner.body,
+                        file_stmts,
+                    ));
+                }
+                results.extend(collect_for_loop_register_class_elements(
+                    &try_stmt.orelse,
+                    file_stmts,
+                ));
+                results.extend(collect_for_loop_register_class_elements(
+                    &try_stmt.finalbody,
+                    file_stmts,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    results
+}
+
+/// Checks if a statement body contains a `register_class(<var_name>)` call.
+fn body_calls_register_class_with(body: &[ast::Stmt], var_name: &str) -> bool {
+    for stmt in body {
+        match stmt {
+            ast::Stmt::Expr(expr_stmt) => {
+                if let Some(call) = expr_stmt.value.as_call_expr() {
+                    if is_register_class_call(&call.func) {
+                        if let Some(first_arg) = call.arguments.args.first() {
+                            if let Some(name) = first_arg.as_name_expr() {
+                                if name.id.as_str() == var_name {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            ast::Stmt::If(if_stmt) => {
+                if body_calls_register_class_with(&if_stmt.body, var_name) {
+                    return true;
+                }
+                for elif in &if_stmt.elif_else_clauses {
+                    if body_calls_register_class_with(&elif.body, var_name) {
+                        return true;
+                    }
+                }
+            }
+            ast::Stmt::Try(try_stmt) => {
+                if body_calls_register_class_with(&try_stmt.body, var_name) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Finds a module-level assignment `name = (elem1, elem2, ...)` or `name = [elem1, elem2, ...]`
+/// and returns the elements.
+fn find_tuple_or_list_elements<'a>(
+    stmts: &'a [ast::Stmt],
+    name: &str,
+) -> Option<&'a [ast::Expr]> {
+    for stmt in stmts {
+        if let ast::Stmt::Assign(assign) = stmt {
+            if assign.targets.len() == 1 {
+                if let Some(target_name) = assign.targets[0].as_name_expr() {
+                    if target_name.id.as_str() == name {
+                        if let Some(tuple_expr) = assign.value.as_tuple_expr() {
+                            return Some(&tuple_expr.elts);
+                        }
+                        if let Some(list_expr) = assign.value.as_list_expr() {
+                            return Some(&list_expr.elts);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Checks if a call expression matches the `bpy.utils.register_class` or
 /// `<alias>.utils.register_class` pattern.
 fn is_register_class_call(func: &Expr) -> bool {
@@ -820,7 +1011,11 @@ fn walk_function_for_properties(
     //   1. register_class(LocalClass)       — class defined in this file
     //   2. register_class(ImportedClass)    — class imported via `from .mod import Cls`
     //   3. register_class(module.Class)     — class accessed via imported module
-    let register_calls = collect_register_class_calls_in_body(body);
+    let mut register_calls = collect_register_class_calls_in_body(body);
+
+    // Case 4: `for cls in classes: register_class(cls)` — expand tuple/list elements
+    let loop_elements = collect_for_loop_register_class_elements(body, file_stmts);
+    register_calls.extend(loop_elements);
     for arg in &register_calls {
         match arg {
             RegisterClassArg::Name(class_name) => {
