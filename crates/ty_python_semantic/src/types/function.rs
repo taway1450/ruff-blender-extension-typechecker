@@ -88,9 +88,9 @@ use crate::types::visitor::any_over_type;
 use crate::types::{
     ApplyTypeMappingVisitor, BoundMethodType, BoundTypeVarInstance, CallableType, ClassBase,
     ClassLiteral, ClassType, DynamicType, FindLegacyTypeVarsVisitor, KnownClass, KnownInstanceType,
-    SpecialFormType, SubclassOfInner, SubclassOfType, Truthiness, Type, TypeContext, TypeMapping,
-    TypeVarBoundOrConstraints, UnionBuilder, UnionType, binding_type, definition_expression_type,
-    infer_definition_types, walk_signature,
+    LiteralValueType, SpecialFormType, SubclassOfInner, SubclassOfType, Truthiness, Type,
+    TypeContext, TypeMapping, TypeVarBoundOrConstraints, UnionBuilder, UnionType, binding_type,
+    definition_expression_type, infer_definition_types, walk_signature,
 };
 use crate::{Db, FxOrderSet};
 
@@ -191,6 +191,19 @@ pub struct DataclassTransformerParams<'db> {
 
 impl get_size2::GetSize for DataclassTransformerParams<'_> {}
 
+/// Metadata for `@overload_mapping(...)` decorators.
+#[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
+pub struct OverloadMappingParams<'db> {
+    #[returns(ref)]
+    pub parameter_name: ast::name::Name,
+
+    /// Pairs of `(argument literal value, return type)` in source order.
+    #[returns(deref)]
+    pub mappings: Box<[(LiteralValueType<'db>, Type<'db>)]>,
+}
+
+impl get_size2::GetSize for OverloadMappingParams<'_> {}
+
 /// Whether a function should implicitly be treated as a staticmethod based on its name.
 pub(crate) fn is_implicit_staticmethod(function_name: &str) -> bool {
     matches!(function_name, "__new__")
@@ -227,6 +240,9 @@ pub struct OverloadLiteral<'db> {
     /// The arguments to `dataclass_transformer`, if this function was annotated
     /// with `@dataclass_transformer(...)`.
     pub(crate) dataclass_transformer_params: Option<DataclassTransformerParams<'db>>,
+
+    /// Metadata for `@overload_mapping(...)`, if present.
+    pub(crate) overload_mapping_params: Option<OverloadMappingParams<'db>>,
 }
 
 // The Salsa heap is tracked separately.
@@ -247,6 +263,7 @@ impl<'db> OverloadLiteral<'db> {
             self.decorators(db),
             self.deprecated(db),
             Some(params),
+            self.overload_mapping_params(db),
         )
     }
 
@@ -970,6 +987,49 @@ impl<'db> FunctionType<'db> {
             .with_dataclass_transformer_params(db, params);
         let literal = FunctionLiteral::new(db, last_definition);
         Self::new(db, literal, None, None)
+    }
+
+    pub(crate) fn overload_mapping_params(self, db: &'db dyn Db) -> Option<OverloadMappingParams<'db>> {
+        self.literal(db).last_definition(db).overload_mapping_params(db)
+    }
+
+    pub(crate) fn overload_mapping_signatures(self, db: &'db dyn Db) -> Option<Vec<Signature<'db>>> {
+        let params = self.overload_mapping_params(db)?;
+        let parameter_name = params.parameter_name(db);
+        let base_signature = self.last_definition_signature(db);
+
+        let target_parameter_index = base_signature
+            .parameters()
+            .iter()
+            .position(|parameter| parameter.name().is_some_and(|name| name == parameter_name))?;
+
+        let signatures = params
+            .mappings(db)
+            .iter()
+            .map(|(argument_literal, return_ty)| {
+                let parameters = crate::types::Parameters::new(
+                    db,
+                    base_signature.parameters().iter().enumerate().map(
+                        |(index, parameter)| {
+                            if index == target_parameter_index {
+                                parameter
+                                    .clone()
+                                    .with_annotated_type(Type::LiteralValue(*argument_literal))
+                            } else {
+                                parameter.clone()
+                            }
+                        },
+                    ),
+                );
+
+                base_signature
+                    .clone()
+                    .with_parameters(parameters)
+                    .with_return_type(*return_ty)
+            })
+            .collect::<Vec<_>>();
+
+        (!signatures.is_empty()).then_some(signatures)
     }
 
     /// Returns the [`File`] in which this function is defined.

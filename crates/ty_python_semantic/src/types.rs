@@ -3473,8 +3473,11 @@ impl<'db> Type<'db> {
             }
 
             Type::BoundMethod(bound_method) => {
-                let signature = bound_method.function(db).signature(db);
-                CallableBinding::from_overloads(self, signature.overloads.iter().cloned())
+                let function = bound_method.function(db);
+                let signatures = function
+                    .overload_mapping_signatures(db)
+                    .unwrap_or_else(|| function.signature(db).overloads.to_vec());
+                CallableBinding::from_overloads(self, signatures)
                     .with_bound_type(bound_method.self_instance(db))
                     .into()
             }
@@ -3688,11 +3691,17 @@ impl<'db> Type<'db> {
                     .into()
                 }
 
-                _ => CallableBinding::from_overloads(
-                    self,
-                    function_type.signature(db).overloads.iter().cloned(),
-                )
-                .into(),
+                _ => {
+                    if let Some(signatures) = function_type.overload_mapping_signatures(db) {
+                        CallableBinding::from_overloads(self, signatures).into()
+                    } else {
+                        CallableBinding::from_overloads(
+                            self,
+                            function_type.signature(db).overloads.iter().cloned(),
+                        )
+                        .into()
+                    }
+                }
             },
 
             Type::ClassLiteral(class) => self

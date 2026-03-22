@@ -17,7 +17,7 @@ use crate::{
         },
         function::{
             FunctionBodyKind, FunctionDecorators, FunctionLiteral, FunctionType, KnownFunction,
-            OverloadLiteral, function_body_kind, is_implicit_classmethod,
+            OverloadLiteral, OverloadMappingParams, function_body_kind, is_implicit_classmethod,
         },
         generics::{enclosing_generic_contexts, typing_self},
         infer::{
@@ -187,9 +187,14 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let mut function_decorators = FunctionDecorators::empty();
         let mut deprecated = None;
         let mut dataclass_transformer_params = None;
+        let mut overload_mapping_params = None;
         let mut final_decorator = None;
 
         for decorator in decorator_list {
+            if overload_mapping_params.is_none() {
+                overload_mapping_params = self.try_parse_overload_mapping_decorator(decorator);
+            }
+
             let decorator_type = self.infer_decorator(decorator);
             let decorator_function_decorator =
                 FunctionDecorators::from_decorator_type(db, decorator_type);
@@ -276,6 +281,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             function_decorators,
             deprecated,
             dataclass_transformer_params,
+            overload_mapping_params,
         );
         let function_literal = FunctionLiteral::new(db, overload_literal);
 
@@ -880,5 +886,123 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             self.add_binding(parameter.into(), definition)
                 .insert(self, inferred_ty);
         }
+    }
+
+    fn try_parse_overload_mapping_decorator(
+        &mut self,
+        decorator: &ast::Decorator,
+    ) -> Option<OverloadMappingParams<'db>> {
+        let call = decorator.expression.as_call_expr()?;
+        if !is_overload_mapping_decorator_name(&call.func) {
+            return None;
+        }
+
+        let arg_name_expr = call
+            .arguments
+            .args
+            .first()
+            .or_else(|| {
+                call.arguments
+                    .keywords
+                    .iter()
+                    .find(|kw| {
+                        kw.arg.as_ref().is_some_and(|arg| {
+                            matches!(
+                                arg.as_str(),
+                                "argument"
+                                    | "arg"
+                                    | "arg_name"
+                                    | "parameter"
+                                    | "parameter_name"
+                                    | "name"
+                            )
+                        })
+                    })
+                    .map(|kw| &kw.value)
+            })?;
+
+        let mapping_expr = call
+            .arguments
+            .args
+            .get(1)
+            .or_else(|| {
+                call.arguments
+                    .keywords
+                    .iter()
+                    .find(|kw| {
+                        kw.arg.as_ref().is_some_and(|arg| {
+                            matches!(arg.as_str(), "mapping" | "return_types" | "overloads")
+                        })
+                    })
+                    .map(|kw| &kw.value)
+            })?;
+
+        let arg_name = self
+            .file_expression_type(arg_name_expr)
+            .as_string_literal()?
+            .value(self.db())
+            .to_string();
+
+        let mapping_dict = mapping_expr.as_dict_expr()?;
+        let mut mappings = Vec::with_capacity(mapping_dict.items.len());
+
+        for item in &mapping_dict.items {
+            let Some(key_expr) = item.key.as_ref() else {
+                continue;
+            };
+
+            let Some(key_literal) = self
+                .file_expression_type(key_expr)
+                .as_literal_value()
+                .map(|literal| literal.to_unpromotable())
+            else {
+                continue;
+            };
+
+            let return_ty = self.infer_type_expression(&item.value);
+            mappings.push((key_literal, return_ty));
+        }
+
+        if mappings.is_empty() {
+            return None;
+        }
+
+        Some(OverloadMappingParams::new(
+            self.db(),
+            &ast::name::Name::new(arg_name),
+            mappings.into_boxed_slice(),
+        ))
+    }
+}
+
+fn is_overload_mapping_decorator_name(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Name(name) => name.id.as_str() == "overload_mapping",
+        ast::Expr::Attribute(attribute) => {
+            if attribute.attr.as_str() != "overload_mapping" {
+                return false;
+            }
+
+            let mut path_segments = vec![attribute.attr.as_str()];
+            let mut current = attribute.value.as_ref();
+
+            loop {
+                match current {
+                    ast::Expr::Attribute(attr) => {
+                        path_segments.push(attr.attr.as_str());
+                        current = attr.value.as_ref();
+                    }
+                    ast::Expr::Name(name) => {
+                        path_segments.push(name.id.as_str());
+                        break;
+                    }
+                    _ => return false,
+                }
+            }
+
+            path_segments.reverse();
+            path_segments == ["bpy", "stub_internal", "overload_mapping", "overload_mapping"]
+        }
+        _ => false,
     }
 }
