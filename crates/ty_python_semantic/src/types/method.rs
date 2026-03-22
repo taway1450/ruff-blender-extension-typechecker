@@ -76,14 +76,15 @@ impl<'db> BoundMethodType<'db> {
     pub(crate) fn into_callable_type(self, db: &'db dyn Db) -> CallableType<'db> {
         let function = self.function(db);
         let self_instance = self.typing_self_type(db);
+        let signatures = function
+            .overload_mapping_signatures(db)
+            .unwrap_or_else(|| function.signature(db).overloads.to_vec());
 
         CallableType::new(
             db,
             CallableSignature::from_overloads(
-                function
-                    .signature(db)
-                    .overloads
-                    .iter()
+                signatures
+                    .into_iter()
                     .map(|signature| signature.bind_self(db, Some(self_instance))),
             ),
             CallableTypeKind::FunctionLike,
@@ -432,9 +433,12 @@ impl<'db> KnownBoundMethodType<'db> {
                 ]
                 .into_iter(),
             )),
-            KnownBoundMethodType::FunctionTypeDunderCall(function) => Either::Left(Either::Right(
-                function.signature(db).overloads.iter().cloned(),
-            )),
+            KnownBoundMethodType::FunctionTypeDunderCall(function) => {
+                let signatures = function
+                    .overload_mapping_signatures(db)
+                    .unwrap_or_else(|| function.signature(db).overloads.to_vec());
+                Either::Left(Either::Right(signatures.into_iter()))
+            }
             KnownBoundMethodType::PropertyDunderSet(_) => {
                 Either::Right(std::iter::once(Signature::new(
                     Parameters::new(

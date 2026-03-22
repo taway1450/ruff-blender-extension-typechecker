@@ -3483,7 +3483,13 @@ impl<'db> Type<'db> {
             }
 
             Type::KnownBoundMethod(method) => {
-                CallableBinding::from_overloads(self, method.signatures(db)).into()
+                let signatures = match method {
+                    KnownBoundMethodType::FunctionTypeDunderCall(function) => function
+                        .overload_mapping_signatures(db)
+                        .unwrap_or_else(|| function.signature(db).overloads.to_vec()),
+                    _ => method.signatures(db).collect(),
+                };
+                CallableBinding::from_overloads(self, signatures).into()
             }
 
             Type::WrapperDescriptor(wrapper_descriptor) => {

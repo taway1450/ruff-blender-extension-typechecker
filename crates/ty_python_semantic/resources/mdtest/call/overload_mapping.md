@@ -355,3 +355,94 @@ from bpy.types import Parser
 parser_from_direct_import = Parser()
 parser_from_direct_import.parse("other")  # error: [no-matching-overload]
 ```
+
+## Method with extra kwargs: mapped return
+
+`bpy/__init__.pyi`:
+
+```pyi
+from . import stub_internal
+from . import types
+```
+
+`bpy/stub_internal/__init__.pyi`:
+
+```pyi
+from . import overload_mapping
+```
+
+`bpy/stub_internal/overload_mapping.pyi`:
+
+```pyi
+from typing import Callable
+from typing import TypeVar
+
+_T = TypeVar("_T")
+
+def overload_mapping(argument: str, mapping: dict[object, object]) -> Callable[[_T], _T]: ...
+```
+
+`bpy/types.pyi`:
+
+```pyi
+from .stub_internal.overload_mapping import overload_mapping
+
+class Dispatcher:
+    @overload_mapping("mode", {"A": int, "B": bool})
+    def run(self, mode: str, text: str = ..., icon: str = ...) -> object: ...
+```
+
+`main.py`:
+
+```py
+from bpy.types import Dispatcher
+
+dispatcher = Dispatcher()
+reveal_type(dispatcher.run("A", text="hello", icon="ADD"))  # revealed: int
+reveal_type(dispatcher.run("B", text="world"))  # revealed: bool
+```
+
+## Method with extra kwargs: no matching key
+
+`bpy/__init__.pyi`:
+
+```pyi
+from . import stub_internal
+from . import types
+```
+
+`bpy/stub_internal/__init__.pyi`:
+
+```pyi
+from . import overload_mapping
+```
+
+`bpy/stub_internal/overload_mapping.pyi`:
+
+```pyi
+from typing import Callable
+from typing import TypeVar
+
+_T = TypeVar("_T")
+
+def overload_mapping(argument: str, mapping: dict[object, object]) -> Callable[[_T], _T]: ...
+```
+
+`bpy/types.pyi`:
+
+```pyi
+from .stub_internal.overload_mapping import overload_mapping
+
+class Dispatcher:
+    @overload_mapping("mode", {"A": int, "B": bool})
+    def run(self, mode: str, text: str = ..., icon: str = ...) -> object: ...
+```
+
+`main.py`:
+
+```py
+from bpy.types import Dispatcher
+
+dispatcher = Dispatcher()
+dispatcher.run("C", text="oops")  # error: [no-matching-overload]
+```
