@@ -1029,6 +1029,13 @@ fn python_cli_argument_virtual_environment() -> anyhow::Result<()> {
     ----- stderr -----
     ");
 
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(
+        &regex::escape("Systém nemůže nalézt uvedený soubor. (os error 2)"),
+        "No such file or directory (os error 2)",
+    );
+    let _s = settings.bind_to_scope();
+
     // But random other paths inside the installation are rejected
     assert_cmd_snapshot!(case.command().arg("--python").arg(other_venv_path), @"
     success: false
@@ -1119,6 +1126,13 @@ fn config_file_broken_python_setting() -> anyhow::Result<()> {
         ),
         ("test.py", ""),
     ])?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(
+        &regex::escape("Systém nemůže nalézt uvedený soubor. (os error 2)"),
+        "No such file or directory (os error 2)",
+    );
+    let _s = settings.bind_to_scope();
 
     assert_cmd_snapshot!(case.command(), @r#"
     success: false
@@ -2890,6 +2904,13 @@ home = ./
             "#,
         ),
     ])?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(
+        &regex::escape("Systém nemůže nalézt uvedený soubor. (os error 2)"),
+        "No such file or directory (os error 2)",
+    );
+    let _s = settings.bind_to_scope();
 
     assert_cmd_snapshot!(case.command()
         .current_dir(case.root().join("project"))

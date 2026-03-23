@@ -5,6 +5,7 @@ use std::process::Command;
 use std::str;
 
 use anyhow::Result;
+use insta::Settings;
 
 use insta_cmd::{assert_cmd_snapshot, get_cargo_bin};
 
@@ -586,6 +587,11 @@ extend = "ruff2.toml"
 extend = "ruff3.toml"
 "#,
     )?;
+
+    let mut settings = Settings::clone_current();
+    settings.add_filter("Systém nemůže nalézt uvedený soubor\\.", "No such file or directory");
+    settings.add_filter("The system cannot find the file specified\\.", "No such file or directory");
+    let _s = settings.bind_to_scope();
 
     assert_cmd_snapshot!(fixture
         .check_command(), @"

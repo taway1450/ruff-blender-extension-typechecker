@@ -580,6 +580,14 @@ fn check_non_existing_path() -> anyhow::Result<()> {
         &regex::escape("The system cannot find the path specified. (os error 3)"),
         "No such file or directory (os error 2)",
     );
+    settings.add_filter(
+        &regex::escape("Systém nemůže nalézt uvedenou cestu. (os error 3)"),
+        "No such file or directory (os error 2)",
+    );
+    settings.add_filter(
+        &regex::escape("Systém nemůže nalézt uvedený soubor. (os error 2)"),
+        "No such file or directory (os error 2)",
+    );
     let _s = settings.bind_to_scope();
 
     assert_cmd_snapshot!(

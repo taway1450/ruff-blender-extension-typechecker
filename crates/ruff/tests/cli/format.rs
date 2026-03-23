@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
+use insta::Settings;
 use insta_cmd::assert_cmd_snapshot;
 
 use super::CliTest;
@@ -2541,6 +2542,11 @@ print( 'hello' )
         ),
     ])?;
 
+    let mut settings = Settings::clone_current();
+    settings.add_filter("Systém nemůže nalézt uvedený soubor\\.", "No such file or directory");
+    settings.add_filter("The system cannot find the file specified\\.", "No such file or directory");
+    let _s = settings.bind_to_scope();
+
     assert_cmd_snapshot!(
             test.format_command()
                 .args(["format", "--preview", "--check", "."]),
@@ -2570,5 +2576,6 @@ print( 'hello' )
 
     ----- stderr -----
     "#);
+
     Ok(())
 }

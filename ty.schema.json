@@ -404,6 +404,16 @@
             }
           ]
         },
+        "blender-property-outside-register": {
+          "title": "detects Blender property definitions outside register() scope",
+          "description": "## What it does\nChecks for Blender dynamic property definitions outside the `register()` function scope.\n\n## Why is this bad?\nBlender properties should only be registered from the `register()` function\n(or functions it calls) in the project root `__init__.py`. Properties defined\nelsewhere will not be recognized by the type checker.\n\n## Example\n```python\n# Bad: property defined at module top level\nbpy.types.Scene.my_prop = bpy.props.StringProperty()\n\n# Good: property defined inside register()\ndef register():\n    bpy.types.Scene.my_prop = bpy.props.StringProperty()\n```",
+          "default": "error",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/Level"
+            }
+          ]
+        },
         "byte-string-type-annotation": {
           "title": "detects byte strings in type annotation positions",
           "description": "## What it does\nChecks for byte-strings in type annotation positions.\n\n## Why is this bad?\nStatic analysis tools like ty can't analyze type annotations that use byte-string notation.\n\n## Examples\n```python\ndef test(): -> b\"int\":\n    ...\n```\n\nUse instead:\n```python\ndef test(): -> \"int\":\n    ...\n```",

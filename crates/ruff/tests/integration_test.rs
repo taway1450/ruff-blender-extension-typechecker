@@ -1823,7 +1823,8 @@ fn check_input_from_argfile() -> Result<()> {
 fn missing_argfile_reports_error() {
     let mut cmd = RuffCheck::default().filename("@!.txt").build();
     insta::with_settings!({filters => vec![
-        ("The system cannot find the file specified.", "No such file or directory")
+        ("The system cannot find the file specified\\.", "No such file or directory"),
+        ("Systém nemůže nalézt uvedený soubor\\.", "No such file or directory"),
     ]}, {
         assert_cmd_snapshot!(cmd, @"
         success: false
