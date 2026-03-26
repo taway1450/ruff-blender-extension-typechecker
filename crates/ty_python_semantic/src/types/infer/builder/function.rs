@@ -23,7 +23,8 @@ use crate::{
         infer::{
             TypeInferenceBuilder,
             builder::{
-                DeclaredAndInferredType, DeferredExpressionState, TypeAndRange,
+                DeclaredAndInferredType, DeferredExpressionState, MultiInferenceState,
+                TypeAndRange,
                 validate_paramspec_components,
             },
             nearest_enclosing_function,
@@ -948,6 +949,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let mapping_dict = mapping_expr.as_dict_expr()?;
         let mut mappings = Vec::with_capacity(mapping_dict.items.len());
 
+        let previous_multi_inference_state =
+            self.set_multi_inference_state(MultiInferenceState::Ignore);
+
         for item in &mapping_dict.items {
             let Some(key_expr) = item.key.as_ref() else {
                 continue;
@@ -964,6 +968,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             let return_ty = self.infer_type_expression(&item.value);
             mappings.push((key_literal, return_ty));
         }
+
+        self.set_multi_inference_state(previous_multi_inference_state);
 
         if mappings.is_empty() {
             return None;

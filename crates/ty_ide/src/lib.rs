@@ -480,7 +480,7 @@ mod tests {
                 settings.extra_paths.clone_from(&self.extra_search_paths);
 
                 let search_paths = settings
-                    .to_search_paths(db.system(), db.vendored())
+                    .to_search_paths(db.system(), db.vendored(), &ty_python_semantic::FallibleStrategy)
                     .expect("Valid search path settings");
 
                 Program::from_settings(

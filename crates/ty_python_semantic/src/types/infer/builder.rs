@@ -113,6 +113,11 @@ use crate::types::{ClassBase, add_inferred_python_version_hint_to_diagnostic};
 use crate::unpack::UnpackPosition;
 use crate::{AnalysisSettings, Db, FxIndexSet, Program};
 
+use crate::blender_property::{
+    BLENDER_PROPERTY_OUTSIDE_REGISTER, as_blender_property,
+    is_dynamic_blender_property_target_attr, is_in_register_scope, lookup_blender_operator,
+};
+
 mod annotation_expression;
 mod binary_expressions;
 mod class;
@@ -2608,7 +2613,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                                 });
 
                             // Attribute is declared or bound on instance. Forbid access from the class object
-                            if emit_diagnostics {
+                            // unless this is a dynamic Blender property assignment in register() scope.
+                            if emit_diagnostics && !is_dynamic_blender_property_target_attr(target)
+                            {
                                 if attribute_is_bound_on_instance {
                                     if let Some(builder) =
                                         self.context.report_lint(&INVALID_ATTRIBUTE_ACCESS, target)
@@ -2630,6 +2637,19 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                                         ));
                                     }
                                 }
+                            }
+
+                            // Emit an error for Blender property assignments outside register() scope.
+                            if emit_diagnostics
+                                && is_dynamic_blender_property_target_attr(target)
+                                && !is_in_register_scope(db, self.file(), target.range())
+                                && let Some(builder) = self
+                                    .context
+                                    .report_lint(&BLENDER_PROPERTY_OUTSIDE_REGISTER, target)
+                            {
+                                builder.into_diagnostic(
+                                    "Blender properties can only be registered from the `register()` function or functions it calls in the project root `__init__.py`"
+                                );
                             }
 
                             false
@@ -3983,10 +4003,17 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let target = assignment.target(self.module());
         let value = assignment.value(self.module());
 
-        let mut declared = self.infer_annotation_expression_allow_pep_613(
-            annotation,
-            DeferredExpressionState::from(self.defer_annotations()),
-        );
+        let mut declared = if value.is_none() && let Some(call_expr) = as_blender_property(annotation)
+        {
+            let return_ty = self.infer_call_expression(call_expr, TypeContext::default());
+            self.store_expression_type(annotation, return_ty);
+            TypeAndQualifiers::declared(return_ty)
+        } else {
+            self.infer_annotation_expression_allow_pep_613(
+                annotation,
+                DeferredExpressionState::from(self.defer_annotations()),
+            )
+        };
 
         // P.args and P.kwargs are only valid as annotations on *args and **kwargs,
         // not as variable annotations. Check both resolved type and AST form.
@@ -8265,6 +8292,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 assigned_type = Some(ty);
             }
         }
+
+        // Check for Blender operator attributes: bpy.ops.<module>.<op_name>
+        if let Some(op_type) = self.try_resolve_blender_operator(attribute) {
+            return op_type;
+        }
+
         let mut fallback_place = value_type.member(db, &attr.id);
         // Exclude non-definitely-bound places for purposes of reachability
         // analysis. We currently do not perform boundness analysis for implicit
@@ -8386,6 +8419,14 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     };
 
                     if bound_on_instance {
+                        // Suppress diagnostics for dynamic Blender property patterns on class objects.
+                        // When `bound_on_instance` is true, the property is registered via
+                        // lookup_blender_dynamic_property, so accessing it on the class (e.g.,
+                        // in register()/unregister()) should not produce unresolved-attribute errors.
+                        if is_dynamic_blender_property_target_attr(attribute) {
+                            return fallback();
+                        }
+
                         builder.into_diagnostic(format_args!(
                             "Attribute `{attr_name}` can only be accessed on instances, \
                             not on the class object `{}` itself.",
@@ -8517,6 +8558,25 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         // Even if we can obtain the attribute type based on the assignments, we still perform default type inference
         // (to report errors).
         assigned_type.unwrap_or(resolved_type)
+    }
+
+    /// Tries to resolve a Blender operator call expression like `bpy.ops.wm.mouse_position`.
+    fn try_resolve_blender_operator(&self, attribute: &ast::ExprAttribute) -> Option<Type<'db>> {
+        let value = &attribute.value;
+        let op_name = attribute.attr.as_str();
+
+        let inner_attr = value.as_attribute_expr()?;
+        let ops_module = inner_attr.attr.as_str();
+
+        let ops_attr = inner_attr.value.as_attribute_expr()?;
+        if ops_attr.attr.as_str() != "ops" {
+            return None;
+        }
+        if !ops_attr.value.is_name_expr() {
+            return None;
+        }
+
+        lookup_blender_operator(self.db(), ops_module, op_name)
     }
 
     fn infer_attribute_expression(&mut self, attribute: &ast::ExprAttribute) -> Type<'db> {
