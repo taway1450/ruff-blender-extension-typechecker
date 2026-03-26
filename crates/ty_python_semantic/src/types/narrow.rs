@@ -3,8 +3,7 @@ use crate::semantic_index::expression::Expression;
 use crate::semantic_index::place::{PlaceExpr, PlaceTable, PlaceTableBuilder, ScopedPlaceId};
 use crate::semantic_index::place_table;
 use crate::semantic_index::predicate::{
-    CallableAndCallExpr, ClassPatternKind, PatternPredicate, PatternPredicateKind, Predicate,
-    PredicateNode,
+    ClassPatternKind, PatternPredicate, PatternPredicateKind, Predicate, PredicateNode,
 };
 use crate::semantic_index::scope::ScopeId;
 use crate::subscript::PyIndex;
@@ -12,7 +11,7 @@ use crate::types::enums::{enum_member_literals, enum_metadata};
 use crate::types::function::KnownFunction;
 use crate::types::infer::{ExpressionInference, infer_same_file_expression_type};
 use crate::types::typed_dict::{
-    SynthesizedTypedDictType, TypedDictField, TypedDictFieldBuilder, TypedDictSchema, TypedDictType,
+    TypedDictField, TypedDictFieldBuilder, TypedDictSchema, TypedDictType,
 };
 use crate::types::{
     CallableType, ClassLiteral, ClassType, IntersectionBuilder, IntersectionType, KnownClass,
@@ -75,7 +74,7 @@ pub(crate) fn infer_narrowing_constraint<'db>(
                 all_negative_narrowing_constraints_for_pattern(db, pattern)
             }
         }
-        PredicateNode::ReturnsNever(_) => return None,
+        PredicateNode::IsNonTerminalCall(_) => return None,
         PredicateNode::StarImportPlaceholder(_) => return None,
     };
 
@@ -602,7 +601,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             PredicateNode::Pattern(pattern) => {
                 self.evaluate_pattern_predicate(pattern, self.is_positive)
             }
-            PredicateNode::ReturnsNever(_) => return None,
+            PredicateNode::IsNonTerminalCall(_) => return None,
             PredicateNode::StarImportPlaceholder(_) => return None,
         };
 
@@ -618,7 +617,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         expression: Expression<'db>,
         is_positive: bool,
     ) -> Option<NarrowingConstraints<'db>> {
-        let expression_node = expression.node_ref(self.db, self.module);
+        let expression_node = expression.node_ref(self.db).node(self.module);
         self.evaluate_expression_node_predicate(expression_node, expression, is_positive)
     }
 
@@ -762,9 +761,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         match self.predicate {
             PredicateNode::Expression(expression) => expression.scope(self.db),
             PredicateNode::Pattern(pattern) => pattern.scope(self.db),
-            PredicateNode::ReturnsNever(CallableAndCallExpr { callable, .. }) => {
-                callable.scope(self.db)
-            }
+            PredicateNode::IsNonTerminalCall(call_expr) => call_expr.scope(self.db),
             PredicateNode::StarImportPlaceholder(definition) => definition.scope(self.db),
         }
     }
@@ -1125,28 +1122,6 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         is_positive: bool,
     ) -> Option<Type<'db>> {
         let op = if is_positive { op } else { op.negate() };
-
-        // `Divergent` shows up as an initial value in cycle recovery. If it appears on either side
-        // of a potentially narrowing comparison, we don't want it to turn that comparison into a
-        // no-op (e.g. because `Divergent` is not a singleton in the `IsNot` branch below), because
-        // that could result in an initial type inference result that's too wide. Then, even if the
-        // next cycle iteration resolved all the `Divergent` values and correctly narrowed the
-        // type, we'd be stuck with the too-wide answer from the first iteration, because
-        // `Type::cycle_normalized` only ever widens and never narrows from one iteration to the
-        // next (to avoid oscillations). To prevent this, we have `Divergent` "poison" any value
-        // that's compared to it, so that `Type::cycle_normalized` can see it and skip the widening
-        // union step.
-        //
-        // For an extended discussion of the case that originally encountered this problem, see the
-        // "`Divergent` in narrowing conditions doesn't run afoul of 'monotonic widening' in cycle
-        // recovery" mdtest case in `while_loop.md`. See also
-        // https://github.com/astral-sh/ruff/pull/22794#issuecomment-3852095578.
-        if lhs_ty.is_divergent() {
-            return Some(lhs_ty);
-        }
-        if rhs_ty.is_divergent() {
-            return Some(rhs_ty);
-        }
 
         match op {
             ast::CmpOp::IsNot => {
@@ -1676,7 +1651,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         singleton: ast::Singleton,
         is_positive: bool,
     ) -> Option<NarrowingConstraints<'db>> {
-        let subject = PlaceExpr::try_from_expr(subject.node_ref(self.db, self.module))?;
+        let subject = PlaceExpr::try_from_expr(subject.node_ref(self.db).node(self.module))?;
         let place = self.expect_place(&subject);
 
         let ty = match singleton {
@@ -1705,11 +1680,10 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             return None;
         }
 
-        let subject = PlaceExpr::try_from_expr(subject.node_ref(self.db, self.module))?;
+        let subject = PlaceExpr::try_from_expr(subject.node_ref(self.db).node(self.module))?;
         let place = self.expect_place(&subject);
 
-        let class_type =
-            infer_same_file_expression_type(self.db, cls, TypeContext::default(), self.module);
+        let class_type = infer_same_file_expression_type(self.db, cls, TypeContext::default());
 
         let narrowed_type = match class_type {
             Type::ClassLiteral(class) => {
@@ -1736,7 +1710,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             return None;
         }
 
-        let subject = PlaceExpr::try_from_expr(subject.node_ref(self.db, self.module))?;
+        let subject = PlaceExpr::try_from_expr(subject.node_ref(self.db).node(self.module))?;
         let place = self.expect_place(&subject);
 
         let mapping_type = ClassInfoConstraintFunction::IsInstance
@@ -1759,16 +1733,13 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         value: Expression<'db>,
         is_positive: bool,
     ) -> Option<NarrowingConstraints<'db>> {
-        let subject_node = subject.node_ref(self.db, self.module);
+        let subject_node = subject.node_ref(self.db).node(self.module);
         let place = {
             let subject = PlaceExpr::try_from_expr(subject_node)?;
             self.expect_place(&subject)
         };
-        let subject_ty =
-            infer_same_file_expression_type(self.db, subject, TypeContext::default(), self.module);
-
-        let value_ty =
-            infer_same_file_expression_type(self.db, value, TypeContext::default(), self.module);
+        let subject_ty = infer_same_file_expression_type(self.db, subject, TypeContext::default());
+        let value_ty = infer_same_file_expression_type(self.db, value, TypeContext::default());
 
         let mut constraints = self
             .evaluate_expr_compare_op(subject_ty, value_ty, ast::CmpOp::Eq, is_positive)
@@ -1950,8 +1921,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             .read_only(true)
             .build();
         let schema = TypedDictSchema::from_iter([(field_name, field)]);
-        let synthesized_typeddict =
-            TypedDictType::Synthesized(SynthesizedTypedDictType::new(self.db, schema));
+        let synthesized_typeddict = TypedDictType::from_schema_items(self.db, schema);
         // As mentioned above, the synthesized `TypedDict` is always negated.
         let intersection = Type::TypedDict(synthesized_typeddict).negate(self.db);
         let place = self.expect_place(&subscript_place_expr);
@@ -2379,7 +2349,7 @@ impl<'db, 'a> PossiblyNarrowedPlacesBuilder<'db, 'a> {
         let mut places = PossiblyNarrowedPlaces::default();
 
         // The match subject can always be narrowed by a pattern
-        let subject_node = subject.node_ref(self.db, module);
+        let subject_node = subject.node_ref(self.db).node(module);
         if let Some(subject_place_expr) = PlaceExpr::try_from_expr(subject_node) {
             if let Some(place) = self.places.place_id((&subject_place_expr).into()) {
                 places.insert(place);

@@ -27,7 +27,9 @@ use crate::types::generics::{
 };
 use crate::types::known_instance::DeprecatedInstance;
 use crate::types::member::Member;
-use crate::types::relation::{HasRelationToVisitor, IsDisjointVisitor, TypeRelation};
+use crate::types::relation::{
+    HasRelationToVisitor, IsDisjointVisitor, TypeRelation, TypeRelationChecker,
+};
 use crate::types::signatures::{CallableSignature, Parameter, Parameters, Signature};
 use crate::types::tuple::TupleSpec;
 use crate::types::{
@@ -1045,93 +1047,19 @@ impl<'db> ClassType<'db> {
     }
 
     /// Return `true` if `other` is present in this class's MRO.
-    pub(super) fn is_subclass_of(self, db: &'db dyn Db, other: ClassType<'db>) -> bool {
-        self.when_subclass_of(
-            db,
-            other,
-            &ConstraintSetBuilder::new(),
+    pub(super) fn is_subclass_of(self, db: &'db dyn Db, target: ClassType<'db>) -> bool {
+        let constraints = ConstraintSetBuilder::new();
+        let relation_visitor = HasRelationToVisitor::default(&constraints);
+        let disjointness_visitor = IsDisjointVisitor::default(&constraints);
+        let checker = TypeRelationChecker::subtyping(
+            &constraints,
             InferableTypeVars::None,
-        )
-        .is_always_satisfied(db)
-    }
-
-    pub(super) fn when_subclass_of<'c>(
-        self,
-        db: &'db dyn Db,
-        other: ClassType<'db>,
-        constraints: &'c ConstraintSetBuilder<'db>,
-        inferable: InferableTypeVars<'_, 'db>,
-    ) -> ConstraintSet<'db, 'c> {
-        self.has_relation_to_impl(
-            db,
-            other,
-            constraints,
-            inferable,
-            TypeRelation::Subtyping,
-            &HasRelationToVisitor::default(constraints),
-            &IsDisjointVisitor::default(constraints),
-        )
-    }
-
-    #[expect(clippy::too_many_arguments)]
-    pub(super) fn has_relation_to_impl<'c>(
-        self,
-        db: &'db dyn Db,
-        other: Self,
-        constraints: &'c ConstraintSetBuilder<'db>,
-        inferable: InferableTypeVars<'_, 'db>,
-        relation: TypeRelation,
-        relation_visitor: &HasRelationToVisitor<'db, 'c>,
-        disjointness_visitor: &IsDisjointVisitor<'db, 'c>,
-    ) -> ConstraintSet<'db, 'c> {
-        self.iter_mro(db).when_any(db, constraints, |base| {
-            match base {
-                ClassBase::Dynamic(_) => match relation {
-                    TypeRelation::Subtyping
-                    | TypeRelation::Redundancy { .. }
-                    | TypeRelation::SubtypingAssuming => {
-                        ConstraintSet::from_bool(constraints, other.is_object(db))
-                    }
-                    TypeRelation::Assignability | TypeRelation::ConstraintSetAssignability => {
-                        ConstraintSet::from_bool(constraints, !other.is_final(db))
-                    }
-                },
-
-                // Protocol, Generic, and TypedDict are special bases that don't match ClassType.
-                ClassBase::Protocol | ClassBase::Generic | ClassBase::TypedDict => {
-                    ConstraintSet::from_bool(constraints, false)
-                }
-
-                ClassBase::Class(base) => match (base, other) {
-                    // Two non-generic classes match if they have the same class literal.
-                    (ClassType::NonGeneric(base_literal), ClassType::NonGeneric(other_literal)) => {
-                        ConstraintSet::from_bool(constraints, base_literal == other_literal)
-                    }
-
-                    // Two generic classes match if they have the same origin and compatible specializations.
-                    (ClassType::Generic(base), ClassType::Generic(other)) => {
-                        ConstraintSet::from_bool(constraints, base.origin(db) == other.origin(db))
-                            .and(db, constraints, || {
-                                base.specialization(db).has_relation_to_impl(
-                                    db,
-                                    other.specialization(db),
-                                    constraints,
-                                    inferable,
-                                    relation,
-                                    relation_visitor,
-                                    disjointness_visitor,
-                                )
-                            })
-                    }
-
-                    // Generic and non-generic classes don't match.
-                    (ClassType::Generic(_), ClassType::NonGeneric(_))
-                    | (ClassType::NonGeneric(_), ClassType::Generic(_)) => {
-                        ConstraintSet::from_bool(constraints, false)
-                    }
-                },
-            }
-        })
+            &relation_visitor,
+            &disjointness_visitor,
+        );
+        checker
+            .check_class_pair(db, self, target)
+            .is_always_satisfied(db)
     }
 
     /// Return the metaclass of this class, or `type[Unknown]` if the metaclass cannot be inferred.
@@ -1922,6 +1850,80 @@ impl<'db> VarianceInferable<'db> for ClassType<'db> {
     }
 }
 
+impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
+    pub(super) fn check_class_pair(
+        &self,
+        db: &'db dyn Db,
+        source: ClassType<'db>,
+        target: ClassType<'db>,
+    ) -> ConstraintSet<'db, 'c> {
+        // Fast path: if source and target are the same class (possibly with different
+        // specializations), we can compare them directly without walking the MRO.
+        match (source, target) {
+            (ClassType::NonGeneric(source), ClassType::NonGeneric(target)) if source == target => {
+                return self.always();
+            }
+            (ClassType::Generic(source_alias), ClassType::Generic(target_alias))
+                if source_alias.origin(db) == target_alias.origin(db) =>
+            {
+                return self.check_specialization_pair(
+                    db,
+                    source_alias.specialization(db),
+                    target_alias.specialization(db),
+                );
+            }
+            _ => {}
+        }
+
+        source.iter_mro(db).when_any(db, self.constraints, |base| {
+            match base {
+                ClassBase::Dynamic(_) => match self.relation {
+                    TypeRelation::Subtyping
+                    | TypeRelation::Redundancy { .. }
+                    | TypeRelation::SubtypingAssuming => {
+                        ConstraintSet::from_bool(self.constraints, target.is_object(db))
+                    }
+                    TypeRelation::Assignability | TypeRelation::ConstraintSetAssignability => {
+                        ConstraintSet::from_bool(self.constraints, !target.is_final(db))
+                    }
+                },
+
+                // Protocol, Generic, and TypedDict are special bases that don't match ClassType.
+                ClassBase::Protocol | ClassBase::Generic | ClassBase::TypedDict => self.never(),
+
+                ClassBase::Class(source) => match (source, target) {
+                    // Two non-generic classes match if they have the same class literal.
+                    (
+                        ClassType::NonGeneric(source_literal),
+                        ClassType::NonGeneric(target_literal),
+                    ) => {
+                        ConstraintSet::from_bool(self.constraints, source_literal == target_literal)
+                    }
+
+                    // Two generic classes match if they have the same origin and compatible specializations.
+                    (ClassType::Generic(source), ClassType::Generic(target)) => {
+                        ConstraintSet::from_bool(
+                            self.constraints,
+                            source.origin(db) == target.origin(db),
+                        )
+                        .and(db, self.constraints, || {
+                            self.check_specialization_pair(
+                                db,
+                                source.specialization(db),
+                                target.specialization(db),
+                            )
+                        })
+                    }
+
+                    // Generic and non-generic classes don't match.
+                    (ClassType::Generic(_), ClassType::NonGeneric(_))
+                    | (ClassType::NonGeneric(_), ClassType::Generic(_)) => self.never(),
+                },
+            }
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, get_size2::GetSize, salsa::Update)]
 pub(super) struct AbstractMethod<'db> {
     pub(super) defining_class: ClassType<'db>,
@@ -2033,6 +2035,47 @@ impl<'db> VarianceInferable<'db> for ClassLiteral<'db> {
             Self::Dynamic(_) | Self::DynamicNamedTuple(_) => TypeVarVariance::Bivariant,
         }
     }
+}
+
+pub(super) fn synthesize_typed_dict_update_member<'db>(
+    db: &'db dyn Db,
+    instance_ty: Type<'db>,
+    keyword_parameters: &[Parameter<'db>],
+) -> Type<'db> {
+    let update_patch_ty = if let Type::TypedDict(typed_dict) = instance_ty {
+        Type::TypedDict(typed_dict.to_update_patch(db))
+    } else {
+        instance_ty
+    };
+
+    let value_ty = UnionBuilder::new(db)
+        .add(update_patch_ty)
+        .add(KnownClass::Iterable.to_specialized_instance(
+            db,
+            &[Type::heterogeneous_tuple(
+                db,
+                [KnownClass::Str.to_instance(db), Type::object()],
+            )],
+        ))
+        .build();
+
+    let update_signature = Signature::new(
+        Parameters::new(
+            db,
+            [
+                Parameter::positional_only(Some(Name::new_static("self")))
+                    .with_annotated_type(instance_ty),
+                Parameter::positional_only(Some(Name::new_static("value")))
+                    .with_annotated_type(value_ty)
+                    .with_default_type(Type::none(db)),
+            ]
+            .into_iter()
+            .chain(keyword_parameters.iter().cloned()),
+        ),
+        Type::none(db),
+    );
+
+    Type::function_like_callable(db, update_signature)
 }
 
 /// Performs member lookups over an MRO (Method Resolution Order).

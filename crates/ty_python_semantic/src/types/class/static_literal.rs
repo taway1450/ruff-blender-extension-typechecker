@@ -37,14 +37,15 @@ use crate::{
             ClassMemberResult, CodeGeneratorKind, DisjointBase, Field, FieldKind,
             InstanceMemberResult, MetaclassError, MetaclassErrorKind, MethodDecorator, MroLookup,
             NamedTupleField, SlotsKind, synthesize_namedtuple_class_member,
+            synthesize_typed_dict_update_member,
         },
         context::InferContext,
         declaration_type, definition_expression_type, determine_upper_bound,
         diagnostic::INVALID_DATACLASS_OVERRIDE,
         enums::{enum_metadata, is_enum_class_by_inheritance, try_unwrap_nonmember_value},
         function::{
-            DataclassTransformerFlags, DataclassTransformerParams, KnownFunction,
-            is_implicit_classmethod, is_implicit_staticmethod,
+            DataclassTransformerParams, KnownFunction, is_implicit_classmethod,
+            is_implicit_staticmethod,
         },
         generics::Specialization,
         infer::infer_unpack_types,
@@ -1889,22 +1890,114 @@ impl<'db> StaticClassLiteral<'db> {
                     CallableTypeKind::FunctionLike,
                 )))
             }
-            (CodeGeneratorKind::TypedDict, "update") => {
-                // TODO: synthesize a set of overloads with precise types
-                let signature = Signature::new(
+            (CodeGeneratorKind::TypedDict, name @ ("__or__" | "__ror__" | "__ior__")) => {
+                // For a TypedDict `TD`, synthesize overloaded signatures:
+                //
+                // ```python
+                // # Overload 1 (all operators): exact same TypedDict
+                // def __or__(self, value: TD, /) -> TD: ...
+                //
+                // # Overload 2 (__or__ / __ror__ only): partial TypedDict (all fields optional)
+                // def __or__(self, value: Partial[TD], /) -> TD: ...
+                //
+                // # Overload 3 (__or__ / __ror__ only): generic dict fallback
+                // def __or__(self, value: dict[str, Any], /) -> dict[str, object]: ...
+                // ```
+                let mut overloads = vec![Signature::new(
                     Parameters::new(
                         db,
                         [
                             Parameter::positional_only(Some(Name::new_static("self")))
                                 .with_annotated_type(instance_ty),
-                            Parameter::variadic(Name::new_static("args")),
-                            Parameter::keyword_variadic(Name::new_static("kwargs")),
+                            Parameter::positional_only(Some(Name::new_static("value")))
+                                .with_annotated_type(instance_ty),
                         ],
                     ),
-                    Type::none(db),
-                );
+                    instance_ty,
+                )];
 
-                Some(Type::function_like_callable(db, signature))
+                if name != "__ior__" {
+                    // `__ior__` intentionally stays exact. `|=` gets its patch-compatible
+                    // fallback during inference so complete dict literals can still be inferred
+                    // against the full TypedDict schema first.
+
+                    // A partial version of this TypedDict (all fields optional) so that dict
+                    // literals and compatible TypedDicts with subset updates can preserve the
+                    // TypedDict type.
+                    let partial_ty = if let Type::TypedDict(td) = instance_ty {
+                        Type::TypedDict(td.to_partial(db))
+                    } else {
+                        instance_ty
+                    };
+
+                    let dict_param_ty = KnownClass::Dict.to_specialized_instance(
+                        db,
+                        &[KnownClass::Str.to_instance(db), Type::any()],
+                    );
+
+                    // We use `object` because a `closed=False` TypedDict (the default) can
+                    // contain arbitrary additional keys with arbitrary value types.
+                    let dict_return_ty = KnownClass::Dict.to_specialized_instance(
+                        db,
+                        &[
+                            KnownClass::Str.to_instance(db),
+                            KnownClass::Object.to_instance(db),
+                        ],
+                    );
+
+                    overloads.push(Signature::new(
+                        Parameters::new(
+                            db,
+                            [
+                                Parameter::positional_only(Some(Name::new_static("self")))
+                                    .with_annotated_type(instance_ty),
+                                Parameter::positional_only(Some(Name::new_static("value")))
+                                    .with_annotated_type(partial_ty),
+                            ],
+                        ),
+                        instance_ty,
+                    ));
+                    overloads.push(Signature::new(
+                        Parameters::new(
+                            db,
+                            [
+                                Parameter::positional_only(Some(Name::new_static("self")))
+                                    .with_annotated_type(instance_ty),
+                                Parameter::positional_only(Some(Name::new_static("value")))
+                                    .with_annotated_type(dict_param_ty),
+                            ],
+                        ),
+                        dict_return_ty,
+                    ));
+                }
+
+                Some(Type::Callable(CallableType::new(
+                    db,
+                    CallableSignature::from_overloads(overloads),
+                    CallableTypeKind::FunctionLike,
+                )))
+            }
+            (CodeGeneratorKind::TypedDict, "update") => {
+                let keyword_parameters: Vec<_> = if let Type::TypedDict(typed_dict) = instance_ty {
+                    typed_dict
+                        .to_update_patch(db)
+                        .items(db)
+                        .iter()
+                        .map(|(name, field)| {
+                            Parameter::keyword_only(name.clone())
+                                .with_annotated_type(field.declared_ty)
+                                .with_default_type(field.declared_ty)
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                Some(synthesize_typed_dict_update_member(
+                    db,
+                    instance_ty,
+                    &keyword_parameters,
+                ))
             }
             _ => None,
         }
@@ -2204,18 +2297,7 @@ impl<'db> StaticClassLiteral<'db> {
                     ..
                 } = field.kind
                 {
-                    let class_kw_only_default = self
-                        .dataclass_params(db)
-                        .is_some_and(|params| params.flags(db).contains(DataclassFlags::KW_ONLY))
-                        // TODO this next part should not be necessary, if we were properly
-                        // initializing `dataclass_params` from the dataclass-transform params, for
-                        // metaclass and base-class-based dataclass-transformers.
-                        || matches!(
-                            field_policy,
-                            CodeGeneratorKind::DataclassLike(Some(transformer_params))
-                                if transformer_params.flags(db).contains(DataclassTransformerFlags::KW_ONLY_DEFAULT)
-                        );
-                    *kw = Some(class_kw_only_default);
+                    *kw = Some(self.has_dataclass_param(db, field_policy, DataclassFlags::KW_ONLY));
                 }
 
                 attributes.insert(symbol.name().clone(), field);
@@ -2931,11 +3013,12 @@ impl<'db> VarianceInferable<'db> for StaticClassLiteral<'db> {
             // not considered here, since they don't use field types in their signatures. TODO:
             // ideally we'd have a single source of truth for information about synthesized
             // methods, so we just look them up normally and don't hardcode this knowledge here.
-            let is_frozen_dataclass = Program::get(db).python_version(db) <= PythonVersion::PY312
-                && self
-                    .dataclass_params(db)
-                    .is_some_and(|params| params.flags(db).contains(DataclassFlags::FROZEN));
-            if is_namedtuple || is_frozen_dataclass {
+            let is_frozen_dataclass_prior_to_313 = Program::get(db).python_version(db)
+                <= PythonVersion::PY312
+                && CodeGeneratorKind::from_static_class(db, self, None)
+                    .is_some_and(|kind| self.has_dataclass_param(db, kind, DataclassFlags::FROZEN));
+
+            if is_namedtuple || is_frozen_dataclass_prior_to_313 {
                 TypeVarVariance::Covariant
             } else {
                 TypeVarVariance::Invariant
