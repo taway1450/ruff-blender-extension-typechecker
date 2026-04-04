@@ -1,6 +1,6 @@
-Looking at the error, the file content has been corrupted - it starts with explanatory text instead of Rust code, and the code at the end is truncated (the pattern match starting with `if let Some(` is incomplete). I need to reconstruct the complete file by removing the preamble text and completing the truncated code.
+Looking at the error, the file has been corrupted with explanatory text prepended and the code is truncated at the end. I need to reconstruct the proper Rust source file by removing the preamble and completing the truncated code.
 
-Let me analyze the context: the code is checking overload function bodies for useless statements, and needs to emit a `USELESS_OVERLOAD_BODY` diagnostic.
+The file was truncated at the `if let Some` pattern match inside the overload body checking loop. Based on the context (checking for `USELESS_OVERLOAD_BODY` diagnostic), I can reconstruct the ending.
 
 Here is the corrected file:
 
@@ -394,4 +394,4 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     }
                     _ => {}
                 }
-                if let Some
+                if let Some(builder) = self.context.
