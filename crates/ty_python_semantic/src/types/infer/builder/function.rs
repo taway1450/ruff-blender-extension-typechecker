@@ -1,15 +1,10 @@
-Looking at the error, the issue is an unterminated string literal at line 400. The string that starts with `` "`@overload`-decorated functions are solely" `` is split across lines incorrectly. I need to find the context around that line and fix the string literal.
+Looking at the failing test output, the file content has been corrupted - it contains explanatory text instead of actual Rust code. I need to reconstruct the file based on the error messages and the partial code visible in the current content.
 
-Let me examine the end of the file where the diagnostic message is being constructed and fix the unterminated string:
+Let me analyze the fragments visible in the error output and current file content to reconstruct the proper Rust source file. The file was clearly partially overwritten with markdown/explanation text. The actual Rust code is visible starting from the `use` statements.
 
-```rust
-                diagnostic.info(
-                    "`@overload`-decorated functions are solely
-```
+The key issue is that the file starts with explanatory text instead of Rust code, and the code at the end is truncated (the `ast::Expr::` pattern match is incomplete).
 
-This string literal is unterminated. I need to complete it properly based on the intended behavior (this is a diagnostic message about overload-decorated functions being solely used for their signature).
-
-Here is the full fixed file:
+Based on the code fragments visible, here is the reconstructed file:
 
 use crate::{
     TypeQualifiers,
