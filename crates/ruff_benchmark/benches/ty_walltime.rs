@@ -3,6 +3,7 @@ use std::fmt::{Display, Formatter};
 
 use rayon::ThreadPoolBuilder;
 use ruff_benchmark::real_world_projects::{InstalledProject, RealWorldProject};
+use ruff_db::STACK_SIZE;
 use ruff_db::system::{OsSystem, SystemPath, SystemPathBuf};
 
 use ruff_db::testing::setup_logging_with_filter;
@@ -285,7 +286,10 @@ fn sympy(bencher: Bencher) {
 
 #[bench(sample_size = 3, sample_count = 8)]
 fn multithreaded(bencher: Bencher) {
-    let thread_pool = ThreadPoolBuilder::new().build().unwrap();
+    let thread_pool = ThreadPoolBuilder::new()
+        .stack_size(STACK_SIZE)
+        .build()
+        .unwrap();
 
     bencher
         .with_inputs(|| ALTAIR.setup_iteration())
@@ -298,8 +302,20 @@ fn multithreaded(bencher: Bencher) {
 }
 
 fn main() {
+    // Spawn the main logic on a thread with a larger stack size to match
+    // the stack size used by ty itself (debug builds have larger stack frames).
+    std::thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(main_impl)
+        .expect("Failed to spawn main thread")
+        .join()
+        .expect("Main thread panicked");
+}
+
+fn main_impl() {
     ThreadPoolBuilder::new()
         .num_threads(1)
+        .stack_size(STACK_SIZE)
         .use_current_thread()
         .build_global()
         .unwrap();
