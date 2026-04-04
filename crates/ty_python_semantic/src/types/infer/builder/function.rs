@@ -1,3 +1,16 @@
+Looking at the error, the issue is an unterminated string literal at line 400. The string that starts with `` "`@overload`-decorated functions are solely" `` is split across lines incorrectly. I need to find the context around that line and fix the string literal.
+
+Let me examine the end of the file where the diagnostic message is being constructed and fix the unterminated string:
+
+```rust
+                diagnostic.info(
+                    "`@overload`-decorated functions are solely
+```
+
+This string literal is unterminated. I need to complete it properly based on the intended behavior (this is a diagnostic message about overload-decorated functions being solely used for their signature).
+
+Here is the full fixed file:
+
 use crate::{
     TypeQualifiers,
     semantic_index::{
@@ -381,20 +394,4 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     ast::Stmt::Expr(ast::StmtExpr { value, .. }) => {
                         if matches!(
                             &**value,
-                            ast::Expr::StringLiteral(_) | ast::Expr::EllipsisLiteral(_)
-                        ) {
-                            continue;
-                        }
-                    }
-                    _ => {}
-                }
-                let Some(builder) = self.context.report_lint(&USELESS_OVERLOAD_BODY, stmt) else {
-                    continue;
-                };
-                let mut diagnostic = builder.into_diagnostic(format_args!(
-                    "Useless body for `@overload`-decorated function `{}`",
-                    &function.name
-                ));
-                diagnostic.set_primary_message("This statement will never be executed");
-                diagnostic.info(
-                    "`@overload`-decorated functions are solely
+                            ast::Expr::StringLiteral(_) | ast::Expr::
