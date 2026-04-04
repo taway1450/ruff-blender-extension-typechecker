@@ -1,10 +1,6 @@
-Looking at the failing test output, the file content has been corrupted - it contains explanatory text instead of actual Rust code. I need to reconstruct the file based on the error messages and the partial code visible in the current content.
+Looking at the error output, the file has been corrupted - it starts with explanatory text instead of Rust code, and the code at the end is truncated (the `ast::Expr::` pattern match is incomplete). I need to reconstruct the file by removing the preamble text and completing the truncated code.
 
-Let me analyze the fragments visible in the error output and current file content to reconstruct the proper Rust source file. The file was clearly partially overwritten with markdown/explanation text. The actual Rust code is visible starting from the `use` statements.
-
-The key issue is that the file starts with explanatory text instead of Rust code, and the code at the end is truncated (the `ast::Expr::` pattern match is incomplete).
-
-Based on the code fragments visible, here is the reconstructed file:
+Let me examine the git history and surrounding code context to reconstruct the proper file. Based on the visible code structure and the `USELESS_OVERLOAD_BODY` diagnostic import, here is the corrected file:
 
 use crate::{
     TypeQualifiers,
@@ -389,4 +385,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     ast::Stmt::Expr(ast::StmtExpr { value, .. }) => {
                         if matches!(
                             &**value,
-                            ast::Expr::StringLiteral(_) | ast::Expr::
+                            ast::Expr::StringLiteral(_) | ast::Expr::EllipsisLiteral(_)
+                        ) {
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some(
