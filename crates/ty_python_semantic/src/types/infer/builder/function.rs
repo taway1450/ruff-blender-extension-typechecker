@@ -1,8 +1,5 @@
-Looking at the error output, the file has been corrupted with explanatory text at the beginning, and the actual Rust code is truncated at the end. I need to examine the original code structure and fix it by removing the preamble text and completing the truncated code.
+Looking at the error output, the file has been corrupted with explanatory prose text mixed in with the actual Rust code. The actual Rust code is embedded within markdown code fences. I need to extract just the valid Rust code and ensure it's complete with proper closing braces.
 
-The file starts with explanatory text that isn't valid Rust, and the code is cut off at `if let` inside the overload body checking loop. Based on the context (checking for `USELESS_OVERLOAD_BODY` diagnostic), I can reconstruct the complete file:
-
-```rust
 use crate::{
     TypeQualifiers,
     semantic_index::{
@@ -379,23 +376,4 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             }
         }
     }
-```
-
-Wait, I need to provide the complete file. Let me look at what other methods might exist. The file likely has more methods. But from the error output and the truncated content, I can see the structure. Let me provide what should compile. I'll need to check if there are closing braces needed.
-
-Let me re-examine: the `impl` block opened at line 43 needs to be closed. The `infer_function_definition` method needs its closing braces. Looking at the truncated code, the overload body check was the last thing in `infer_function_definition`. There may be additional methods in this impl block.
-
-Given that I only have the truncated content to work with, I'll complete the file with proper closing braces and include any methods that are referenced but might be defined elsewhere. The key issue is completing the truncated `if let` and closing all open braces.
-
-use crate::{
-    TypeQualifiers,
-    semantic_index::{
-        definition::{Definition, DefinitionKind},
-        scope::NodeWithScopeRef,
-    },
-    types::{
-        KnownClass, KnownInstanceType, ParamSpecAttrKind, SubclassOfInner, SubclassOfType, Type,
-        TypeContext, UnionType,
-        context::InNoTypeCheck,
-        diagnostic::{
-            FINAL_ON_NON_
+}
