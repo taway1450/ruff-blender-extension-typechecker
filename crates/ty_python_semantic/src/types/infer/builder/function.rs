@@ -1,8 +1,6 @@
-Looking at the error, the file has been corrupted with explanatory text prepended and the code is truncated at the end. I need to reconstruct the proper Rust source file by removing the preamble and completing the truncated code.
+Looking at the error output, the file has been corrupted - it contains explanatory text instead of proper Rust code, and the actual code is truncated at the end. I need to reconstruct the complete file by removing the preamble text and completing the truncated code.
 
-The file was truncated at the `if let Some` pattern match inside the overload body checking loop. Based on the context (checking for `USELESS_OVERLOAD_BODY` diagnostic), I can reconstruct the ending.
-
-Here is the corrected file:
+Based on the context, the file is truncated at the `if let Some(builder) = self.context.` line inside the overload body checking loop. This is checking for `USELESS_OVERLOAD_BODY` diagnostic. Let me reconstruct the complete file:
 
 use crate::{
     TypeQualifiers,
@@ -394,4 +392,4 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     }
                     _ => {}
                 }
-                if let Some(builder) = self.context.
+                if let
