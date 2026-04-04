@@ -456,6 +456,7 @@ mod tests {
         sources: Vec<Source>,
         /// Extra search paths for library stubs (not first-party).
         extra_search_paths: Vec<SystemPathBuf>,
+        snapshot_filters: Vec<(String, String)>,
     }
 
     impl CursorTestBuilder {
@@ -551,6 +552,9 @@ mod tests {
             insta_settings.add_filter(r#"\\(\w\w|\.|")"#, "/$1");
             // Filter out TODO types because they are different between debug and release builds.
             insta_settings.add_filter(r"@Todo\(.+\)", "@Todo");
+            for (pattern, replacement) in &self.snapshot_filters {
+                insta_settings.add_filter(pattern, replacement);
+            }
 
             let insta_settings_guard = insta_settings.bind_to_scope();
 
@@ -567,6 +571,16 @@ mod tests {
             contents: impl AsRef<str>,
         ) -> &mut CursorTestBuilder {
             add_source(&mut self.sources, path, contents);
+            self
+        }
+
+        pub(super) fn snapshot_filter(
+            &mut self,
+            pattern: impl Into<String>,
+            replacement: impl Into<String>,
+        ) -> &mut CursorTestBuilder {
+            self.snapshot_filters
+                .push((pattern.into(), replacement.into()));
             self
         }
 
