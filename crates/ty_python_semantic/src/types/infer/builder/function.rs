@@ -1,6 +1,8 @@
-Looking at the error output, the file has been corrupted - it starts with explanatory text instead of Rust code, and the code at the end is truncated (the `ast::Expr::` pattern match is incomplete). I need to reconstruct the file by removing the preamble text and completing the truncated code.
+Looking at the error, the file content has been corrupted - it starts with explanatory text instead of Rust code, and the code at the end is truncated (the pattern match starting with `if let Some(` is incomplete). I need to reconstruct the complete file by removing the preamble text and completing the truncated code.
 
-Let me examine the git history and surrounding code context to reconstruct the proper file. Based on the visible code structure and the `USELESS_OVERLOAD_BODY` diagnostic import, here is the corrected file:
+Let me analyze the context: the code is checking overload function bodies for useless statements, and needs to emit a `USELESS_OVERLOAD_BODY` diagnostic.
+
+Here is the corrected file:
 
 use crate::{
     TypeQualifiers,
@@ -392,4 +394,4 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     }
                     _ => {}
                 }
-                if let Some(
+                if let Some
