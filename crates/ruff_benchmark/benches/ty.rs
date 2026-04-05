@@ -8,7 +8,7 @@ use ruff_benchmark::real_world_projects::{
 use std::fmt::Write;
 use std::ops::Range;
 
-use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group};
 use rayon::ThreadPoolBuilder;
 use rustc_hash::FxHashSet;
 
@@ -1033,4 +1033,22 @@ criterion_group!(
     benchmark_pandas_tdd,
 );
 criterion_group!(project, anyio, attrs, hydra, datetype);
-criterion_main!(check_file, micro, project);
+fn main() {
+    // Spawn the main logic on a thread with a larger stack size to match
+    // the stack size used by ty itself (debug builds have larger stack frames).
+    std::thread::Builder::new()
+        .stack_size(ruff_db::STACK_SIZE)
+        .spawn(main_impl)
+        .expect("Failed to spawn main thread")
+        .join()
+        .expect("Main thread panicked");
+}
+
+fn main_impl() {
+    check_file();
+    micro();
+    project();
+    criterion::Criterion::default()
+        .configure_from_args()
+        .final_summary();
+}

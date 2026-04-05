@@ -967,7 +967,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 continue;
             };
 
-            let return_ty = self.infer_type_expression(&item.value);
+            let return_ty = self.infer_type_expression_no_store(&item.value);
             mappings.push((key_literal, return_ty));
         }
 

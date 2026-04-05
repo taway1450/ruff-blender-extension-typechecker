@@ -232,7 +232,7 @@ impl fmt::Display for DisplayHoverContent<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::CursorTest;
+    use crate::tests::{CursorTest, cursor_test};
     use crate::{MarkupKind, hover};
     use std::fmt::Write as _;
 

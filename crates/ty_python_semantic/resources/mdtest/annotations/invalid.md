@@ -102,7 +102,7 @@ async def outer_async():  # avoid unrelated syntax errors on `yield` and `await`
         l: await baz(),  # error: [invalid-type-form] "`await` expressions are not allowed in parameter annotations"
         m: (yield 1),  # error: [invalid-type-form] "`yield` expressions are not allowed in parameter annotations"
         n: 1 < 2,  # error: [invalid-type-form] "Comparison expressions are not allowed in parameter annotations"
-        o: bar(),  # error: [invalid-type-form] "Function calls are not allowed in parameter annotations"
+        o: bar(),  # error: [invalid-type-form] "Function calls are not allowed in type expressions (except for Blender properties)"
         # error: [unsupported-operator]
         # error: [invalid-type-form] "F-strings are not allowed in parameter annotations"
         p: int | f"foo",
@@ -283,7 +283,7 @@ async def outer_async():  # avoid unrelated syntax errors on `yield` and `await`
         k: "await baz()",  # error: [invalid-type-form] "`await` expressions are not allowed in parameter annotations"
         l: "(yield 1)",  # error: [invalid-type-form] "`yield` expressions are not allowed in parameter annotations"
         m: "1 < 2",  # error: [invalid-type-form] "Comparison expressions are not allowed in parameter annotations"
-        n: "bar()",  # error: [invalid-type-form] "Function calls are not allowed in parameter annotations"
+        n: "bar()",  # error: [invalid-type-form] "Function calls are not allowed in type expressions (except for Blender properties)"
         # error: [invalid-type-form] "Only simple names and dotted names can be subscripted in parameter annotations"
         o: "[1, 2, 3][1:2]",
         # error: [invalid-type-form] "Only simple names, dotted names and subscripts can be used in parameter annotations"
